@@ -263,17 +263,18 @@ var _ = Describe("Phase 8: Gateway Keycloak OIDC + Registration Policy + Credent
 		By("creating gateway CA cert secret")
 		ensureGatewayCASecret(projDir)
 
-		By("deploying gateway to cluster")
-		_ = exec.Command("kubectl", "delete", "deployment", "aip-gateway", "-n", "aip-k8s-system", "--ignore-not-found").Run()
-		_ = exec.Command("kubectl", "wait", "--for=delete", "pod", "-l", "app=aip-gateway", "-n", "aip-k8s-system", "--timeout=30s").Run()
-		applyGw := exec.Command("kubectl", "apply", "-f", projDir+"/test/fixtures/gateway-dev.yaml")
-		out, err = applyGw.CombinedOutput()
-		Expect(err).NotTo(HaveOccurred(), "apply gateway-dev.yaml: %s", string(out))
+		By("deploying gateway via make deploy-gateway-e2e")
+		_ = exec.Command("kubectl", "delete", "deployment", "aip-k8s-gateway", "-n", "aip-k8s-system", "--ignore-not-found").Run()
+		_ = exec.Command("kubectl", "wait", "--for=delete", "pod", "-l", "app.kubernetes.io/component=gateway", "-n", "aip-k8s-system", "--timeout=30s").Run()
+		applyCmd = exec.Command("make", "deploy-gateway-e2e", "IMG=example.com/aip-gateway:v0.0.1")
+		applyCmd.Dir = projDir
+		out, err = applyCmd.CombinedOutput()
+		Expect(err).NotTo(HaveOccurred(), "make deploy-gateway-e2e: %s", string(out))
 
 		By("waiting for gateway pod to be ready")
 		Eventually(func(g Gomega) {
 			readyCmd := exec.Command("kubectl", "get", "pods",
-				"-l", "app=aip-gateway", "-n", "aip-k8s-system",
+				"-l", "app.kubernetes.io/component=gateway", "-n", "aip-k8s-system",
 				"-o", `jsonpath={.items[0].status.conditions[?(@.type=="Ready")].status}`)
 			status, err := utils.Run(readyCmd)
 			g.Expect(err).NotTo(HaveOccurred())
@@ -281,10 +282,10 @@ var _ = Describe("Phase 8: Gateway Keycloak OIDC + Registration Policy + Credent
 		}, 3*time.Minute, 3*time.Second).Should(Succeed())
 
 		By("port-forwarding gateway to localhost:" + kc8GWPort)
-		_ = exec.Command("pkill", "-f", "port-forward.*aip-gateway.*"+kc8GWPort).Run()
+		_ = exec.Command("pkill", "-f", "port-forward.*aip-k8s-gateway.*"+kc8GWPort).Run()
 		time.Sleep(500 * time.Millisecond)
 		gwPF := exec.Command("kubectl", "port-forward",
-			"svc/aip-gateway", kc8GWPort+":8080", "-n", "aip-k8s-system")
+			"svc/aip-k8s-gateway", kc8GWPort+":8080", "-n", "aip-k8s-system")
 		gwPF.Stdout = GinkgoWriter
 		gwPF.Stderr = GinkgoWriter
 		Expect(gwPF.Start()).To(Succeed())

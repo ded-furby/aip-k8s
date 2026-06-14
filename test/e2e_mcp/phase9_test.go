@@ -244,27 +244,28 @@ roleRef:
 			By("creating gateway CA cert secret")
 			ensureGatewayCASecret(projDir)
 
-			By("deploying gateway to cluster (gateway-dev.yaml)")
-			_ = exec.Command("kubectl", "delete", "deployment", "aip-gateway", "-n", "aip-k8s-system", "--ignore-not-found").Run()
-			_ = exec.Command("kubectl", "wait", "--for=delete", "pod", "-l", "app=aip-gateway", "-n", "aip-k8s-system", "--timeout=30s").Run()
-			_, err = runCmd(exec.Command("kubectl", "apply", "-f",
-				filepath.Join(projDir, "test/fixtures/gateway-dev.yaml")))
-			Expect(err).NotTo(HaveOccurred(), "apply gateway-dev.yaml")
+			By("deploying gateway via make deploy-gateway-e2e")
+			_ = exec.Command("kubectl", "delete", "deployment", "aip-k8s-gateway", "-n", "aip-k8s-system", "--ignore-not-found").Run()
+			_ = exec.Command("kubectl", "wait", "--for=delete", "pod", "-l", "app.kubernetes.io/component=gateway", "-n", "aip-k8s-system", "--timeout=30s").Run()
+			deployCmd := exec.Command("make", "deploy-gateway-e2e", "IMG=example.com/aip-gateway:v0.0.1")
+			deployCmd.Dir = projDir
+			_, err = runCmd(deployCmd)
+			Expect(err).NotTo(HaveOccurred(), "make deploy-gateway-e2e")
 
 			By("waiting for gateway pod to be ready")
 			Eventually(func(g Gomega) {
 				out, err := runCmd(exec.Command("kubectl", "get", "pods",
-					"-l", "app=aip-gateway", "-n", "aip-k8s-system",
+					"-l", "app.kubernetes.io/component=gateway", "-n", "aip-k8s-system",
 					"-o", `jsonpath={.items[0].status.conditions[?(@.type=="Ready")].status}`))
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(strings.TrimSpace(out)).To(Equal("True"))
 			}, 3*time.Minute, 3*time.Second).Should(Succeed())
 
 			By("port-forwarding gateway to localhost:" + kc9GWPort)
-			_ = exec.Command("pkill", "-f", "port-forward.*aip-gateway.*"+kc9GWPort).Run()
+			_ = exec.Command("pkill", "-f", "port-forward.*aip-k8s-gateway.*"+kc9GWPort).Run()
 			time.Sleep(500 * time.Millisecond)
 			gwPFProc = exec.Command("kubectl", "port-forward",
-				"svc/aip-gateway", kc9GWPort+":8080", "-n", "aip-k8s-system")
+				"svc/aip-k8s-gateway", kc9GWPort+":8080", "-n", "aip-k8s-system")
 			gwPFProc.Stdout = GinkgoWriter
 			gwPFProc.Stderr = GinkgoWriter
 			Expect(gwPFProc.Start()).To(Succeed())
@@ -323,8 +324,8 @@ roleRef:
 			_ = exec.Command("kubectl", "delete", "agentrequest", "--all", "-n", "default", "--ignore-not-found").Run()
 			_, _ = runCmd(exec.Command("kubectl", "delete", "-f", "config/mcp/k8s-mcp-server-cr.yaml", "--ignore-not-found"))
 			_, _ = runCmd(exec.Command("kubectl", "delete", "-f", "config/mcp/k8s-mcp-server.yaml", "--ignore-not-found"))
-			_, _ = runCmd(exec.Command("kubectl", "delete", "-f", "test/fixtures/gateway-dev.yaml", "--ignore-not-found"))
-			_ = exec.Command("kubectl", "delete", "secret", "--all", "-n", "aip-k8s-system", "--ignore-not-found").Run()
+_ = exec.Command("kubectl", "delete", "deployment", "aip-k8s-gateway", "-n", "aip-k8s-system", "--ignore-not-found").Run()
+_ = exec.Command("kubectl", "delete", "secret", "--all", "-n", "aip-k8s-system", "--ignore-not-found").Run()
 		})
 
 		It("Keycloak JWT → KubernetesOIDC exchange → K8s audit shows agent identity", func() {

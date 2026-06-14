@@ -32,7 +32,7 @@ const (
 	// kc9GWPort is the local port-forward for the Phase 9 in-cluster gateway.
 	kc9GWPort = "18088"
 
-	// Phase 8b registration test identities — must match gateway-dev.yaml --agent-subjects.
+	// Phase 8b registration test identities — must match gateway E2E overlay --agent-subjects.
 	kcRegisteredAgentID     = "aip-registered-agent"
 	kcRegisteredAgentSecret = "reg-agent-secret"
 	kcWrongSubjectID        = "aip-wrong-subject"

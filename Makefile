@@ -265,6 +265,22 @@ deploy: manifests kustomize kubectl ## Deploy controller to the K8s cluster spec
 undeploy: kustomize kubectl ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	"$(KUSTOMIZE)" build config/default | "$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f -
 
+.PHONY: deploy-gateway
+deploy-gateway: kustomize kubectl ## Deploy gateway to the K8s cluster specified in ~/.kube/config.
+	cd config/gateway && "$(KUSTOMIZE)" edit set image controller=${IMG}
+	"$(KUSTOMIZE)" build config/gateway | "$(KUBECTL)" apply -f -
+
+.PHONY: undeploy-gateway
+undeploy-gateway: kustomize kubectl ## Undeploy gateway from the K8s cluster specified in ~/.kube/config.
+	"$(KUSTOMIZE)" build config/gateway | "$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f -
+
+.PHONY: deploy-gateway-e2e
+deploy-gateway-e2e: kustomize kubectl ## Deploy gateway with E2E overlay (test/fixtures/gateway-overlay).
+	cd test/fixtures/gateway-overlay && "$(KUSTOMIZE)" edit set image controller=${IMG}
+	"$(KUSTOMIZE)" build test/fixtures/gateway-overlay | "$(KUBECTL)" apply -f -
+
+
+
 ##@ Dependencies
 
 ## Location to install dependencies to

@@ -215,14 +215,16 @@ else
     echo "WARNING: $HELM_GW_RBAC not found — skipping Helm chart gateway RBAC check."
 fi
 
-KUSTOMIZE_GW_RBAC="$REPO_ROOT/test/fixtures/gateway-dev.yaml"
+KUSTOMIZE_GW_RBAC="$REPO_ROOT/config/gateway/rbac.yaml"
 if [ -f "$KUSTOMIZE_GW_RBAC" ]; then
-    if ! check_gateway_rbac "$KUSTOMIZE_GW_RBAC" "E2E fixture gateway RBAC"; then
+    if ! check_gateway_rbac "$KUSTOMIZE_GW_RBAC" "Kustomize gateway base RBAC"; then
         gw_fail=1
     fi
 else
-    echo "WARNING: $KUSTOMIZE_GW_RBAC not found — skipping E2E fixture RBAC check."
+    echo "WARNING: $KUSTOMIZE_GW_RBAC not found — skipping kustomize base RBAC check."
 fi
+
+
 
 if [ "$gw_fail" -ne 0 ]; then
     exit 1

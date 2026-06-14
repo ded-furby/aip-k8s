@@ -111,14 +111,14 @@ var _ = Describe("Phase 8b: per-agent AgentRegistration credentials (Keycloak)",
 		By("building and loading gateway Docker image")
 		buildLoadGatewayImage(projDir)
 
-		By("deploying gateway (gateway-dev.yaml) and patching for warn policy")
+		By("deploying gateway and patching for warn policy")
 		ensureGatewayCASecret(projDir)
 		// Ensure any previous gateway is gone so apply starts fresh.
-		_ = exec.Command("kubectl", "delete", "deployment", "aip-gateway", "-n", "aip-k8s-system", "--ignore-not-found").Run()
-		_ = exec.Command("kubectl", "wait", "--for=delete", "pod", "-l", "app=aip-gateway", "-n", "aip-k8s-system", "--timeout=30s").Run()
+		_ = exec.Command("kubectl", "delete", "deployment", "aip-k8s-gateway", "-n", "aip-k8s-system", "--ignore-not-found").Run()
+		_ = exec.Command("kubectl", "wait", "--for=delete", "pod", "-l", "app.kubernetes.io/component=gateway", "-n", "aip-k8s-system", "--timeout=30s").Run()
 
-		// gateway-dev.yaml already has oidc-issuer-url, audience, identity-claim, addr=:18088.
-		// We need to create the gateway-secret (required by gateway-dev.yaml volume mount).
+		// gateway E2E overlay has oidc-issuer-url, audience, identity-claim, addr=:18088.
+		// We need to create the gateway-secret (required by the overlay volume mount).
 		gwSecretJSON := `{
 			"apiVersion": "v1", "kind": "Secret",
 			"metadata": {"name": "aip-gateway-secret", "namespace": "aip-k8s-system"},
@@ -126,9 +126,10 @@ var _ = Describe("Phase 8b: per-agent AgentRegistration credentials (Keycloak)",
 		}`
 		Expect(kubectlApply(gwSecretJSON)).To(Succeed())
 
-		_, err = runCmd(exec.Command("kubectl", "apply", "-f",
-			filepath.Join(projDir, "test/fixtures/gateway-dev.yaml")))
-		Expect(err).NotTo(HaveOccurred(), "apply gateway-dev.yaml")
+		deployCmd := exec.Command("make", "deploy-gateway-e2e", "IMG=example.com/aip-gateway:v0.0.1")
+		deployCmd.Dir = projDir
+		_, err = runCmd(deployCmd)
+		Expect(err).NotTo(HaveOccurred(), "make deploy-gateway-e2e")
 
 		agentSubjects := strings.Join([]string{
 			kcRegisteredAgentID,
@@ -149,18 +150,18 @@ var _ = Describe("Phase 8b: per-agent AgentRegistration credentials (Keycloak)",
 				"--unregistered-agent-policy=warn"
 			]}]}}}}`,
 			kcInClusterIssuer, agentSubjects)
-		_, err = runCmd(exec.Command("kubectl", "patch", "deployment", "aip-gateway",
+		_, err = runCmd(exec.Command("kubectl", "patch", "deployment", "aip-k8s-gateway",
 			"-n", "aip-k8s-system", "--type=strategic", "--patch", patchJSON))
 		Expect(err).NotTo(HaveOccurred(), "patch gateway deployment")
 
-		_, err = runCmd(exec.Command("kubectl", "rollout", "status", "deployment/aip-gateway",
+		_, err = runCmd(exec.Command("kubectl", "rollout", "status", "deployment/aip-k8s-gateway",
 			"-n", "aip-k8s-system", "--timeout=3m"))
 		Expect(err).NotTo(HaveOccurred(), "gateway rollout status")
 
 		By("port-forwarding gateway to localhost:" + kc8bGWPort)
-		_ = exec.Command("pkill", "-f", "port-forward.*aip-gateway.*"+kc8bGWPort).Run()
+		_ = exec.Command("pkill", "-f", "port-forward.*aip-k8s-gateway.*"+kc8bGWPort).Run()
 		time.Sleep(500 * time.Millisecond)
-		gwPFProc = exec.Command("kubectl", "port-forward", "svc/aip-gateway", kc8bGWPort+":8080", "-n", "aip-k8s-system")
+		gwPFProc = exec.Command("kubectl", "port-forward", "svc/aip-k8s-gateway", kc8bGWPort+":8080", "-n", "aip-k8s-system")
 		gwPFProc.Stdout = GinkgoWriter
 		gwPFProc.Stderr = GinkgoWriter
 		Expect(gwPFProc.Start()).To(Succeed())
@@ -179,7 +180,7 @@ var _ = Describe("Phase 8b: per-agent AgentRegistration credentials (Keycloak)",
 		_ = exec.Command("kubectl", "delete", "agentregistration", "--all", "-n", "aip-k8s-system", "--ignore-not-found").Run()
 		_ = exec.Command("kubectl", "delete", "secret", "--all", "-n", "aip-k8s-system", "--ignore-not-found").Run()
 		_ = exec.Command("kubectl", "delete", "mcpserver", "--all", "--ignore-not-found").Run()
-		_ = exec.Command("kubectl", "delete", "deployment", "aip-gateway", "-n", "aip-k8s-system", "--ignore-not-found").Run()
+		_ = exec.Command("kubectl", "delete", "deployment", "aip-k8s-gateway", "-n", "aip-k8s-system", "--ignore-not-found").Run()
 
 		if gwPFProc != nil && gwPFProc.Process != nil {
 			_ = gwPFProc.Process.Kill()
