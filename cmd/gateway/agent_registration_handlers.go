@@ -310,6 +310,22 @@ func (s *Server) handleSelfRegisterAgentRegistration(w http.ResponseWriter, r *h
 		}
 	}
 
+	// Auto-approve when registration policy is auto.
+	if s.registrationPolicy == policyAuto {
+		now := metav1.Now()
+		patchBase2 := reg.DeepCopy()
+		reg.Status.Phase = v1alpha1.PhaseApproved
+		reg.Status.ApprovedServices = reg.Spec.RequestedServices
+		reg.Status.ApprovedAt = &now
+		if patchErr := s.client.Status().Patch(r.Context(), reg,
+			client.MergeFromWithOptions(patchBase2, client.MergeFromWithOptimisticLock{})); patchErr != nil {
+			log.Printf("WARNING: auto-approve patch failed for AgentRegistration name=%s err=%v", reg.Name, patchErr)
+			if getErr := s.client.Get(r.Context(), types.NamespacedName{Name: reg.Name, Namespace: ns}, reg); getErr != nil {
+				log.Printf("ERROR: re-fetch after auto-approve failure name=%s err=%v", reg.Name, getErr)
+			}
+		}
+	}
+
 	writeJSON(w, http.StatusCreated, reg)
 }
 

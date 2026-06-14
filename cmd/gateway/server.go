@@ -76,6 +76,8 @@ const (
 	policyAllow         = "allow"
 	policyWarn          = "warn"
 	policyStrict        = "strict"
+	policyAuto          = "auto"
+	policyManual        = "manual"
 	annotationValueTrue = "true"
 )
 
@@ -107,6 +109,7 @@ type Server struct {
 	mcpCache                *mcpServerCache
 	regCache                *registrationCache
 	unregisteredAgentPolicy string
+	registrationPolicy      string // "auto" or "manual"
 }
 
 type affectedTargetBody struct {

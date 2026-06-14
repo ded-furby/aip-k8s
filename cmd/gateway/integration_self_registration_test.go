@@ -15,11 +15,13 @@ import (
 	"github.com/agent-control-plane/aip-k8s/api/v1alpha1"
 )
 
+const testIssuerURL = "https://issuer.example.com"
+
 func runSelfRegistrationTests(t *testing.T, directClient client.Client, ctx context.Context) {
 	t.Run("self-register happy path", func(t *testing.T) {
 		gm := gomega.NewWithT(t)
 		sub := "self-agent"
-		issuer := "https://issuer.example.com"
+		issuer := testIssuerURL
 		ss := &Server{
 			client:       directClient,
 			apiReader:    directClient,
@@ -55,7 +57,7 @@ func runSelfRegistrationTests(t *testing.T, directClient client.Client, ctx cont
 	t.Run("self-register duplicate -> 409", func(t *testing.T) {
 		gm := gomega.NewWithT(t)
 		sub := "dup-agent"
-		issuer := "https://issuer.example.com"
+		issuer := testIssuerURL
 		ss := &Server{
 			client:       directClient,
 			apiReader:    directClient,
@@ -91,6 +93,66 @@ func runSelfRegistrationTests(t *testing.T, directClient client.Client, ctx cont
 		rr2 := httptest.NewRecorder()
 		ss.handleSelfRegisterAgentRegistration(rr2, req2)
 		gm.Expect(rr2.Code).To(gomega.Equal(http.StatusConflict))
+	})
+
+	t.Run("auto policy: self-register -> Approved immediately", func(t *testing.T) {
+		gm := gomega.NewWithT(t)
+		sub := "auto-policy-agent"
+		issuer := testIssuerURL
+		s := &Server{
+			client:                  directClient,
+			apiReader:               directClient,
+			roles:                   newRoleConfig(sub, "", "", "", "", ""),
+			authRequired:            true,
+			registrationPolicy:      "auto",
+			unregisteredAgentPolicy: "allow",
+		}
+		body := selfRegisterRequest{RequestedServices: []string{"svc-a"}}
+		jsonBody, err := json.Marshal(body)
+		gm.Expect(err).To(gomega.Succeed())
+		req := httptest.NewRequest("POST", "/agent-registrations/self", bytes.NewBuffer(jsonBody))
+		reqCtx := withCallerSub(context.Background(), sub)
+		reqCtx = withCallerGroups(reqCtx, []string{})
+		reqCtx = withCallerIssuer(reqCtx, issuer)
+		req = req.WithContext(reqCtx)
+		rr := httptest.NewRecorder()
+		s.handleSelfRegisterAgentRegistration(rr, req)
+		gm.Expect(rr.Code).To(gomega.Equal(http.StatusCreated))
+		var reg v1alpha1.AgentRegistration
+		gm.Expect(json.Unmarshal(rr.Body.Bytes(), &reg)).To(gomega.Succeed())
+		gm.Expect(reg.Status.Phase).To(gomega.Equal(v1alpha1.PhaseApproved))
+		gm.Expect(reg.Status.ApprovedServices).To(gomega.ConsistOf("svc-a"))
+		gm.Expect(reg.Status.ApprovedAt).NotTo(gomega.BeNil())
+		defer func() { _ = directClient.Delete(ctx, &reg) }()
+	})
+
+	t.Run("manual policy: self-register -> Pending", func(t *testing.T) {
+		gm := gomega.NewWithT(t)
+		sub := "manual-policy-agent"
+		issuer := testIssuerURL
+		s := &Server{
+			client:                  directClient,
+			apiReader:               directClient,
+			roles:                   newRoleConfig(sub, "", "", "", "", ""),
+			authRequired:            true,
+			registrationPolicy:      "manual",
+			unregisteredAgentPolicy: "strict",
+		}
+		body := selfRegisterRequest{RequestedServices: []string{"svc-b"}}
+		jsonBody, err := json.Marshal(body)
+		gm.Expect(err).To(gomega.Succeed())
+		req := httptest.NewRequest("POST", "/agent-registrations/self", bytes.NewBuffer(jsonBody))
+		reqCtx := withCallerSub(context.Background(), sub)
+		reqCtx = withCallerGroups(reqCtx, []string{})
+		reqCtx = withCallerIssuer(reqCtx, issuer)
+		req = req.WithContext(reqCtx)
+		rr := httptest.NewRecorder()
+		s.handleSelfRegisterAgentRegistration(rr, req)
+		gm.Expect(rr.Code).To(gomega.Equal(http.StatusCreated))
+		var reg v1alpha1.AgentRegistration
+		gm.Expect(json.Unmarshal(rr.Body.Bytes(), &reg)).To(gomega.Succeed())
+		gm.Expect(reg.Status.Phase).To(gomega.Equal(""))
+		defer func() { _ = directClient.Delete(ctx, &reg) }()
 	})
 
 	t.Run("issuer mismatch on AgentRequest -> 403", func(t *testing.T) {

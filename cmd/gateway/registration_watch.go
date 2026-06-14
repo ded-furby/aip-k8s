@@ -26,6 +26,7 @@ type registrationCache struct {
 	k8sClient        client.Client
 	oidcClientID     string
 	oidcClientSecret string
+	namespace        string // deployment namespace; only registrations here are watched
 	mu               sync.RWMutex
 	byAgent          map[string]*v1alpha1.AgentRegistration
 	providers        map[string]map[string]credential.Provider // agentIdentity -> service -> Provider
@@ -37,6 +38,13 @@ func newRegistrationCache(k8sClient client.Client) *registrationCache {
 		byAgent:   make(map[string]*v1alpha1.AgentRegistration),
 		providers: make(map[string]map[string]credential.Provider),
 	}
+}
+
+// withNamespace sets the deployment namespace for scoping watch operations.
+// Call once at startup before watchAgentRegistrations begins.
+func (c *registrationCache) withNamespace(ns string) *registrationCache {
+	c.namespace = ns
+	return c
 }
 
 // withOIDCCredentials sets the client credentials used for KubernetesOIDC token exchange.
@@ -240,7 +248,8 @@ func (c *registrationCache) remove(agentIdentity string) {
 	delete(c.providers, agentIdentity)
 }
 
-// watchAgentRegistrations runs a background loop that lists and watches AgentRegistration CRDs.
+// watchAgentRegistrations runs a background loop that lists and watches AgentRegistration CRDs
+// scoped to the cache's configured namespace (empty = cluster-wide).
 func watchAgentRegistrations(ctx context.Context, cl client.WithWatch, cache *registrationCache) {
 	for {
 		if err := watchAgentRegistrationsOnce(ctx, cl, cache); err != nil {
@@ -254,13 +263,17 @@ func watchAgentRegistrations(ctx context.Context, cl client.WithWatch, cache *re
 	}
 }
 
-// watchAgentRegistrationsOnce performs a single list+watch cycle.
+// watchAgentRegistrationsOnce performs a single list+watch cycle scoped to the cache namespace.
 func watchAgentRegistrationsOnce(ctx context.Context, cl client.WithWatch, cache *registrationCache) error {
 	var initialList v1alpha1.AgentRegistrationList
+	listOpts := []client.ListOption{}
+	if cache.namespace != "" {
+		listOpts = append(listOpts, client.InNamespace(cache.namespace))
+	}
 	listErr := retry.OnError(retry.DefaultRetry, func(err error) bool {
 		return err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
 	}, func() error {
-		return cl.List(ctx, &initialList)
+		return cl.List(ctx, &initialList, listOpts...)
 	})
 	if listErr != nil {
 		return listErr
@@ -285,10 +298,14 @@ func watchAgentRegistrationsOnce(ctx context.Context, cl client.WithWatch, cache
 	log.Printf("AgentRegistration watch loaded registrations, count=%d", len(initialList.Items))
 
 	rv := initialList.ResourceVersion
-	watcher, err := cl.Watch(ctx, &v1alpha1.AgentRegistrationList{}, &client.ListOptions{
+	watchOpts := []client.ListOption{&client.ListOptions{
 		FieldSelector: fields.Everything(),
 		Raw:           &metav1.ListOptions{ResourceVersion: rv},
-	})
+	}}
+	if cache.namespace != "" {
+		watchOpts = append(watchOpts, client.InNamespace(cache.namespace))
+	}
+	watcher, err := cl.Watch(ctx, &v1alpha1.AgentRegistrationList{}, watchOpts...)
 	if err != nil {
 		return err
 	}

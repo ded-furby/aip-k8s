@@ -65,6 +65,10 @@ var (
 			"Typically sourced from a K8s Secret via environment variable.")
 	unregisteredAgentPolicy = flag.String("unregistered-agent-policy", "allow",
 		"Policy for unregistered agents: 'allow', 'warn', or 'strict'")
+	registrationPolicy = flag.String("registration-policy", "",
+		"Registration approval policy: 'auto' (approve immediately on self-registration) or 'manual' "+
+			"(hold at Pending for admin review). Default depends on --unregistered-agent-policy: "+
+			"'auto' when allow/warn, 'manual' when strict.")
 )
 
 const (
@@ -98,6 +102,23 @@ func main() { //nolint:gocyclo  // setup-heavy, acceptable for main
 		*unregisteredAgentPolicy != policyWarn &&
 		*unregisteredAgentPolicy != policyStrict {
 		log.Fatalf("invalid --unregistered-agent-policy %q: must be allow, warn, or strict", *unregisteredAgentPolicy)
+	}
+
+	effectiveRegPolicy := *registrationPolicy
+	if effectiveRegPolicy == "" {
+		if *unregisteredAgentPolicy == policyStrict {
+			effectiveRegPolicy = policyManual
+		} else {
+			effectiveRegPolicy = policyAuto
+		}
+	}
+	if effectiveRegPolicy != policyAuto && effectiveRegPolicy != policyManual {
+		log.Fatalf("invalid --registration-policy %q: must be auto or manual", effectiveRegPolicy)
+	}
+	if *unregisteredAgentPolicy == policyStrict && effectiveRegPolicy == policyAuto {
+		log.Printf("WARNING: --unregistered-agent-policy=strict with --registration-policy=auto: " +
+			"any authenticated caller can self-register and be immediately approved; " +
+			"identity vetting is fully delegated to the IdP")
 	}
 
 	// Load KubeConfig — use the standard loading rules which handle
@@ -214,7 +235,11 @@ func main() { //nolint:gocyclo  // setup-heavy, acceptable for main
 		mcpCache.seed(srv.Name, srv.URL, srv.BearerToken, srv.Tools)
 	}
 
-	regCache := newRegistrationCache(k8sClient).withOIDCCredentials(
+	deploymentNamespace := os.Getenv("POD_NAMESPACE")
+	if deploymentNamespace == "" {
+		deploymentNamespace = defaultNamespace
+	}
+	regCache := newRegistrationCache(k8sClient).withNamespace(deploymentNamespace).withOIDCCredentials(
 		os.Getenv("OIDC_CLIENT_ID"),
 		os.Getenv("OIDC_CLIENT_SECRET"),
 	)
@@ -234,6 +259,7 @@ func main() { //nolint:gocyclo  // setup-heavy, acceptable for main
 		mcpCache:                mcpCache,
 		regCache:                regCache,
 		unregisteredAgentPolicy: *unregisteredAgentPolicy,
+		registrationPolicy:      effectiveRegPolicy,
 	}
 
 	go watchMCPServers(ctx, k8sClient, mcpCache)
