@@ -282,6 +282,11 @@ func newProxyHeaderMiddleware(trustedCIDRs string) func(http.Handler) http.Handl
 			if caller != "" {
 				r = r.WithContext(withCallerSub(r.Context(), caller))
 			}
+			// Proxy-header mode has no validated issuer; set an empty issuer so
+			// validateOIDCIdentity does not reject registrations that have a
+			// spec.oidc.issuer set. Registration-level OIDC enforcement is only
+			// meaningful when the OIDC middleware is active.
+			r = r.WithContext(withCallerIssuer(r.Context(), ""))
 			next.ServeHTTP(w, r)
 		})
 	}

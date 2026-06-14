@@ -94,7 +94,9 @@ func main() { //nolint:gocyclo  // setup-heavy, acceptable for main
 		}
 	}
 
-	if *unregisteredAgentPolicy != "allow" && *unregisteredAgentPolicy != "warn" && *unregisteredAgentPolicy != "strict" {
+	if *unregisteredAgentPolicy != policyAllow &&
+		*unregisteredAgentPolicy != policyWarn &&
+		*unregisteredAgentPolicy != policyStrict {
 		log.Fatalf("invalid --unregistered-agent-policy %q: must be allow, warn, or strict", *unregisteredAgentPolicy)
 	}
 
@@ -288,6 +290,9 @@ func main() { //nolint:gocyclo  // setup-heavy, acceptable for main
 	mux.HandleFunc("PUT /agent-registrations/{name}", server.handleReplaceAgentRegistration)
 	mux.HandleFunc("DELETE /agent-registrations/{name}", server.handleDeleteAgentRegistration)
 	mux.HandleFunc("POST /agent-registrations/self", server.handleSelfRegisterAgentRegistration)
+	mux.HandleFunc("POST /agent-registrations/{name}/approve", server.handleApproveAgentRegistration)
+	mux.HandleFunc("POST /agent-registrations/{name}/deny", server.handleDenyAgentRegistration)
+	mux.HandleFunc("GET /agent-registrations/{name}/watch", server.handleWatchAgentRegistration)
 	mux.HandleFunc("POST /agent-graduation-policies", server.handleCreateAgentGraduationPolicy)
 	mux.HandleFunc("GET /agent-graduation-policies", server.handleListAgentGraduationPolicies)
 	mux.HandleFunc("GET /agent-graduation-policies/{name}", server.handleGetAgentGraduationPolicy)

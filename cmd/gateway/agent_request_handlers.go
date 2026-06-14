@@ -206,6 +206,10 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 				agentReq.Annotations["governance.aip.io/unregistered"] = "true"
 			}
 			// "allow": proceed silently — backward-compatible default
+		} else if s.unregisteredAgentPolicy == "strict" && reg.Status.Phase != v1alpha1.PhaseApproved {
+			writeError(w, http.StatusForbidden,
+				fmt.Sprintf("AGENT_NOT_REGISTERED: agent %q registration is in phase %q", agentIdentity, reg.Status.Phase))
+			return
 		} else {
 			issuer := callerIssuerFromCtx(r.Context())
 			if err := validateOIDCIdentity(reg, issuer, sub); err != nil {

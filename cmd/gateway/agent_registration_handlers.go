@@ -2,11 +2,13 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
@@ -14,6 +16,8 @@ import (
 
 	"github.com/agent-control-plane/aip-k8s/api/v1alpha1"
 )
+
+const maxRequestBodyBytes = 1 << 20 // 1 MiB
 
 type selfRegisterRequest struct {
 	RequestedServices []string                       `json:"requestedServices,omitempty"`
@@ -28,7 +32,7 @@ func (s *Server) handleCreateAgentRegistration(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MiB
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 
 	ns := r.URL.Query().Get("namespace")
 	if ns == "" {
@@ -131,7 +135,7 @@ func (s *Server) handleReplaceAgentRegistration(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MiB
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 
 	ns := r.URL.Query().Get("namespace")
 	if ns == "" {
@@ -242,7 +246,7 @@ func (s *Server) handleSelfRegisterAgentRegistration(w http.ResponseWriter, r *h
 		return
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MiB
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 
 	var body selfRegisterRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -286,10 +290,205 @@ func (s *Server) handleSelfRegisterAgentRegistration(w http.ResponseWriter, r *h
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		log.Printf("ERROR: failed to self-register agent %q: %v", sub, err)
+		log.Printf("ERROR: failed to self-register AgentRegistration name=%s namespace=%s agent=%s err=%v",
+			reg.Name, ns, sub, err)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
+	// Populate status.registeredBy: status is a subresource and cannot be set
+	// on Create, so patch it immediately after creation.
+	patchBase := reg.DeepCopy()
+	reg.Status.RegisteredBy = sub
+	if patchErr := s.client.Status().Patch(r.Context(), reg, client.MergeFrom(patchBase)); patchErr != nil {
+		log.Printf("WARNING: failed to set status.registeredBy for AgentRegistration name=%s namespace=%s agent=%s err=%v",
+			reg.Name, ns, sub, patchErr)
+		// Re-fetch so the returned object reflects actual stored state.
+		if getErr := s.client.Get(r.Context(), types.NamespacedName{Name: reg.Name, Namespace: ns}, reg); getErr != nil {
+			log.Printf("ERROR: failed to re-fetch AgentRegistration after status patch failure name=%s namespace=%s err=%v",
+				reg.Name, ns, getErr)
+		}
+	}
+
 	writeJSON(w, http.StatusCreated, reg)
+}
+
+type approveRegistrationBody struct {
+	ApprovedServices []string `json:"approvedServices,omitempty"`
+	Reason           string   `json:"reason,omitempty"`
+}
+
+type denyRegistrationBody struct {
+	Reason string `json:"reason,omitempty"`
+}
+
+// handleApproveAgentRegistration transitions a registration's status.phase to Approved.
+func (s *Server) handleApproveAgentRegistration(w http.ResponseWriter, r *http.Request) {
+	sub := callerSubFromCtx(r.Context())
+	groups := callerGroupsFromCtx(r.Context())
+	if !requireRole(s.roles, roleReviewer, sub, groups, w) {
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+
+	var body approveRegistrationBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	name := r.PathValue("name")
+	ns := r.URL.Query().Get("namespace")
+	if ns == "" {
+		ns = defaultNamespace
+	}
+
+	// Pre-check with apiReader for immediate 404 without retry overhead.
+	var preCheck v1alpha1.AgentRegistration
+	if err := s.apiReader.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &preCheck); err != nil {
+		if apierrors.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	var reg v1alpha1.AgentRegistration
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &reg); err != nil {
+			return err
+		}
+		if reg.Status.Phase == v1alpha1.PhaseApproved || reg.Status.Phase == v1alpha1.PhaseDenied {
+			return errAlreadyTerminal
+		}
+		// Self-approval guard: reviewer cannot approve their own registration.
+		if s.authRequired && reg.Spec.AgentIdentity == sub {
+			return errSelfApproval
+		}
+		now := metav1.Now()
+		base := reg.DeepCopy()
+		reg.Status.Phase = v1alpha1.PhaseApproved
+		if len(body.ApprovedServices) > 0 {
+			// Validate: approvedServices must be a subset of requestedServices.
+			if !isSubset(body.ApprovedServices, reg.Spec.RequestedServices) {
+				return fmt.Errorf("approvedServices %q are not a subset of requestedServices %q: %w",
+					body.ApprovedServices, reg.Spec.RequestedServices, errValidation)
+			}
+			reg.Status.ApprovedServices = body.ApprovedServices
+		} else {
+			reg.Status.ApprovedServices = reg.Spec.RequestedServices
+		}
+		reg.Status.ApprovedAt = &now
+		if body.Reason != "" {
+			log.Printf("Approved AgentRegistration name=%s namespace=%s reason=%q", name, ns, body.Reason)
+		}
+		return s.client.Status().Patch(r.Context(), &reg,
+			client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+	}); err != nil {
+		if apierrors.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
+		if errors.Is(err, errAlreadyTerminal) {
+			writeError(w, http.StatusConflict, fmt.Sprintf("registration is already in phase %q", reg.Status.Phase))
+			return
+		}
+		if errors.Is(err, errSelfApproval) {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
+		if errors.Is(err, errValidation) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, reg)
+}
+
+func isSubset(sub, super []string) bool {
+	superSet := make(map[string]struct{}, len(super))
+	for _, s := range super {
+		superSet[s] = struct{}{}
+	}
+	for _, s := range sub {
+		if _, ok := superSet[s]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// handleDenyAgentRegistration transitions a registration's status.phase to Denied.
+func (s *Server) handleDenyAgentRegistration(w http.ResponseWriter, r *http.Request) {
+	sub := callerSubFromCtx(r.Context())
+	groups := callerGroupsFromCtx(r.Context())
+	if !requireRole(s.roles, roleReviewer, sub, groups, w) {
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+
+	var body denyRegistrationBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	name := r.PathValue("name")
+	ns := r.URL.Query().Get("namespace")
+	if ns == "" {
+		ns = defaultNamespace
+	}
+
+	// Pre-check with apiReader for immediate 404 without retry overhead.
+	var preCheck v1alpha1.AgentRegistration
+	if err := s.apiReader.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &preCheck); err != nil {
+		if apierrors.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	var reg v1alpha1.AgentRegistration
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &reg); err != nil {
+			return err
+		}
+		if reg.Status.Phase == v1alpha1.PhaseApproved || reg.Status.Phase == v1alpha1.PhaseDenied {
+			return errAlreadyTerminal
+		}
+		base := reg.DeepCopy()
+		reg.Status.Phase = v1alpha1.PhaseDenied
+		if body.Reason != "" {
+			log.Printf("Denied AgentRegistration name=%s namespace=%s reason=%q", name, ns, body.Reason)
+			meta.SetStatusCondition(&reg.Status.Conditions, metav1.Condition{
+				Type:    "Denied",
+				Status:  metav1.ConditionTrue,
+				Reason:  "DeniedByReviewer",
+				Message: body.Reason,
+			})
+		}
+		return s.client.Status().Patch(r.Context(), &reg,
+			client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+	}); err != nil {
+		if apierrors.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
+		if errors.Is(err, errAlreadyTerminal) {
+			writeError(w, http.StatusConflict, fmt.Sprintf("registration is already in phase %q", reg.Status.Phase))
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, reg)
 }

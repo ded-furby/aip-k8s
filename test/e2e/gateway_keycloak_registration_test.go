@@ -209,7 +209,8 @@ var _ = Describe("Phase 8: Gateway Keycloak OIDC + Registration Policy + Credent
 			"kind":       "AgentRegistration",
 			"metadata":   {"name": "kc-registered-agent", "namespace": "default"},
 			"spec": {
-				"agentIdentity": %q,
+				"agentIdentity":     %q,
+				"requestedServices": [%q],
 				"oidc": {
 					"issuer":          %q,
 					"subjectClaim":    "azp",
@@ -225,7 +226,7 @@ var _ = Describe("Phase 8: Gateway Keycloak OIDC + Registration Policy + Credent
 					}
 				}]
 			}
-		}`, kcRegisteredAgentID, kcInClusterIssuer, kcRegisteredAgentID,
+		}`, kcRegisteredAgentID, kcFakeMCPServerName, kcInClusterIssuer, kcRegisteredAgentID,
 			kcFakeMCPServerName, kcStaticSecretName, kcStaticSecretNS)
 		applyReg := exec.Command("kubectl", "apply", "-f", "-")
 		applyReg.Stdin = strings.NewReader(regJSON)
@@ -297,6 +298,20 @@ var _ = Describe("Phase 8: Gateway Keycloak OIDC + Registration Policy + Credent
 			defer resp.Body.Close() //nolint:errcheck
 			return resp.StatusCode
 		}, 30*time.Second, time.Second).Should(Equal(http.StatusOK))
+
+		// The AgentRegistration was created above via kubectl apply (admin path).
+		// Now approve it via the gateway's reviewer endpoint so the strict-policy
+		// gate allows the registered agent to submit requests. This models the
+		// real production flow: admin creates the spec, reviewer countersigns.
+		By("approving AgentRegistration via gateway reviewer endpoint")
+		reviewerToken := kcFetchToken(kcPort, kcRealm, "aip-reviewer-1", "reviewer-1-secret")
+		approveResp, err := gwPostWithToken(kc8GWPort, "/agent-registrations/kc-registered-agent/approve",
+			fmt.Sprintf(`{"approvedServices":[%q]}`, kcFakeMCPServerName), reviewerToken)
+		Expect(err).NotTo(HaveOccurred())
+		approveBody, _ := io.ReadAll(approveResp.Body)
+		_ = approveResp.Body.Close()
+		Expect(approveResp.StatusCode).To(Equal(http.StatusOK),
+			"reviewer approve failed; body: %s", string(approveBody))
 
 		By("waiting for MCPServer controller to discover tools from fake upstream")
 		Eventually(func() string {

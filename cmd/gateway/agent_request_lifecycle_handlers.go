@@ -394,14 +394,19 @@ func (s *Server) handleListAgentRequests(w http.ResponseWriter, r *http.Request)
 }
 
 // validateOIDCIdentity checks whether (issuer, sub) matches the AgentRegistration.
-// Both the issuer URL and the subject must match; a mismatch on either is a 403.
-// Returns nil when the registration has no OIDC config.
+// When the OIDC middleware is active (issuer is non-empty), the issuer URL must
+// match the registered issuer exactly or the check returns 403. When issuer is
+// empty (proxy-header mode), the issuer check is skipped — there is no validated
+// issuer to compare against. Returns nil when the registration has no OIDC config.
 func validateOIDCIdentity(reg *v1alpha1.AgentRegistration, issuer, sub string) error {
 	if reg.Spec.OIDC == nil {
 		return nil
 	}
-	// Issuer check: token iss must match the registered issuer exactly.
-	if issuer != reg.Spec.OIDC.Issuer {
+	// Issuer check: only enforced when the OIDC middleware validated an issuer.
+	// In proxy-header mode (issuer == "") the caller identity comes from
+	// X-Remote-User, not from a validated OIDC token, so there is no issuer
+	// to compare against the registration.
+	if issuer != "" && issuer != reg.Spec.OIDC.Issuer {
 		return fmt.Errorf("token issuer %q does not match registered issuer %q for agent %q",
 			issuer, reg.Spec.OIDC.Issuer, reg.Spec.AgentIdentity)
 	}

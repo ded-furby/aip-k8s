@@ -118,9 +118,16 @@ func (c *registrationCache) exists(agentIdentity string) bool {
 }
 
 // providerFor returns the CredentialProvider for (agentIdentity, service).
+// Returns nil when the registration is Denied — only Denied revokes provider
+// access. When no registration exists in byAgent (e.g. legacy direct-provider
+// setups), the providers map is checked directly for backward compatibility.
 func (c *registrationCache) providerFor(agentIdentity, service string) credential.Provider {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
+	reg := c.byAgent[agentIdentity]
+	if reg != nil && reg.Status.Phase == v1alpha1.PhaseDenied {
+		return nil
+	}
 	if svcProviders, ok := c.providers[agentIdentity]; ok {
 		return svcProviders[service]
 	}
@@ -151,8 +158,10 @@ func (c *registrationCache) upsert(reg *v1alpha1.AgentRegistration) {
 	}
 
 	// Status updates, annotation/label changes, and relist reconnects do not
-	// change Generation. Skip the provider rebuild to preserve cached tokens.
+	// change Generation. Refresh the stored pointer so status.phase is visible
+	// to callers, but skip the provider rebuild to preserve cached tokens.
 	if existing, ok := c.byAgent[agentID]; ok && existing.Generation == reg.Generation {
+		c.byAgent[agentID] = reg
 		return
 	}
 

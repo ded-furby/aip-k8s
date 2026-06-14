@@ -166,24 +166,63 @@ echo "Helm chart controller RBAC is in sync with $KUSTOMIZE_ROLE."
 # The gateway ClusterRole is hand-maintained. Enforce known invariants:
 # if a resource is listed, its /status subresource must also be listed
 # (gateway patches status on all mutable resources).
-HELM_GW_RBAC="$REPO_ROOT/charts/aip-k8s/templates/gateway/rbac.yaml"
 
-if [ ! -f "$HELM_GW_RBAC" ]; then
-    echo "ERROR: $HELM_GW_RBAC does not exist." >&2
-    exit 1
-fi
+# Resources the gateway only reads (no Status().Patch in production code)
+readonly_resources=" auditrecords safetypolicies mcpservers agentgraduationpolicies agenttrustprofiles "
+
+# Shared function: checks a gateway RBAC file for status subresource completeness.
+# Returns 0 on success, prints drift messages to stdout.
+check_gateway_rbac() {
+    local rbac_file="$1"
+    local label="$2"
+    local fail=0
+
+    base_resources=$(awk '
+        /^- apiGroups:/ { in_groups=0; in_resources=0 }
+        /^[[:space:]]+- governance\.aip\.io$/ { in_groups=1 }
+        in_groups && /^[[:space:]]+resources:/ { in_resources=1; next }
+        in_groups && in_resources && /^[[:space:]]+- / {
+            name = $0; sub(/^[[:space:]]*- /, "", name)
+            if (name !~ /\//) print name
+            next
+        }
+        in_groups && in_resources && !/^[[:space:]]+- / && !/^$/ { in_resources=0 }
+    ' "$rbac_file")
+
+    while IFS= read -r base_resource; do
+        [ -z "$base_resource" ] && continue
+        if echo "$readonly_resources" | grep -q " ${base_resource} "; then
+            continue
+        fi
+        status_resource="${base_resource}/status"
+        if ! grep -qE "^[[:space:]]*- ${status_resource}$" "$rbac_file"; then
+            echo "${label}: '${base_resource}' is present in ${rbac_file##*/}"
+            echo "${label}:   but '${status_resource}' is missing."
+            fail=1
+        fi
+    done <<< "$base_resources"
+    return "$fail"
+}
 
 gw_fail=0
-for base_resource in agentrequests diagnosticaccuracysummaries governedresources; do
-    status_resource="${base_resource}/status"
-    if grep -qE "^[[:space:]]*- ${base_resource}$" "$HELM_GW_RBAC"; then
-        if ! grep -qE "^[[:space:]]*- ${status_resource}$" "$HELM_GW_RBAC"; then
-            echo "GATEWAY RBAC DRIFT: '${base_resource}' is present in $HELM_GW_RBAC"
-            echo "  but '${status_resource}' is missing."
-            gw_fail=1
-        fi
+
+HELM_GW_RBAC="$REPO_ROOT/charts/aip-k8s/templates/gateway/rbac.yaml"
+if [ -f "$HELM_GW_RBAC" ]; then
+    if ! check_gateway_rbac "$HELM_GW_RBAC" "Helm chart gateway RBAC"; then
+        gw_fail=1
     fi
-done
+else
+    echo "WARNING: $HELM_GW_RBAC not found — skipping Helm chart gateway RBAC check."
+fi
+
+KUSTOMIZE_GW_RBAC="$REPO_ROOT/test/fixtures/gateway-dev.yaml"
+if [ -f "$KUSTOMIZE_GW_RBAC" ]; then
+    if ! check_gateway_rbac "$KUSTOMIZE_GW_RBAC" "E2E fixture gateway RBAC"; then
+        gw_fail=1
+    fi
+else
+    echo "WARNING: $KUSTOMIZE_GW_RBAC not found — skipping E2E fixture RBAC check."
+fi
 
 if [ "$gw_fail" -ne 0 ]; then
     exit 1

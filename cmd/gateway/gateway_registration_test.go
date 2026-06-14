@@ -74,6 +74,17 @@ var _ = Describe("Registration policy tests", Ordered, func() {
 			},
 		}
 		Expect(k8sClient.Create(ctx, reg)).To(Succeed())
+
+		// Approve via the gateway reviewer endpoint — do not bypass the gateway
+		// by patching status directly. reviewer-sub is in --reviewer-subjects.
+		reviewerToken := oidcServer.mintTokenWithAZP("reviewer-sub", "aip-gateway", "reviewer-sub", 5*time.Minute)
+		approveResp, err := gwPostWithToken(gwPort, "/agent-registrations/reg-registered-agent/approve",
+			`{}`, reviewerToken)
+		Expect(err).NotTo(HaveOccurred())
+		approveBody, _ := io.ReadAll(approveResp.Body)
+		_ = approveResp.Body.Close()
+		Expect(approveResp.StatusCode).To(Equal(http.StatusOK),
+			"reviewer approve failed; body: %s", string(approveBody))
 	})
 
 	AfterAll(func() {

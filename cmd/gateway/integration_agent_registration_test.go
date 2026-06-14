@@ -239,6 +239,25 @@ func runAgentRegistrationCRUDTests(t *testing.T, directClient client.Client, ctx
 		gm.Expect(directClient.Create(ctx, regToken)).To(gomega.Succeed())
 		defer func() { _ = directClient.Delete(ctx, regToken) }()
 
+		// Approve via handler to exercise the real approve path (not a direct status patch).
+		approveS := &Server{
+			client:    directClient,
+			apiReader: directClient,
+			roles:     newRoleConfig("", "reviewer-sub", "", "", "", ""),
+		}
+		approveBody, _ := json.Marshal(approveRegistrationBody{})
+		approveReq := httptest.NewRequest("POST", "/agent-registrations/"+regToken.Name+"/approve",
+			bytes.NewBuffer(approveBody))
+		approveReq.SetPathValue("name", regToken.Name)
+		approveReqCtx := withCallerSub(context.Background(), "reviewer-sub")
+		approveReqCtx = withCallerGroups(approveReqCtx, []string{})
+		approveReq = approveReq.WithContext(approveReqCtx)
+		approveRR := httptest.NewRecorder()
+		approveS.handleApproveAgentRegistration(approveRR, approveReq)
+		gm.Expect(approveRR.Code).To(gomega.Equal(http.StatusOK))
+		gm.Expect(directClient.Get(ctx,
+			client.ObjectKey{Name: regToken.Name, Namespace: testDefaultNS}, regToken)).To(gomega.Succeed())
+
 		// Create approved AgentRequest for agent-sub
 		reqApproved := &v1alpha1.AgentRequest{
 			ObjectMeta: metav1.ObjectMeta{

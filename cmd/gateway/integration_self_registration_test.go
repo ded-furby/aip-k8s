@@ -115,6 +115,24 @@ func runSelfRegistrationTests(t *testing.T, directClient client.Client, ctx cont
 			}
 		}()
 
+		// Approve via handler to exercise the real approve path (not a direct status patch).
+		approveS := &Server{
+			client:    directClient,
+			apiReader: directClient,
+			roles:     newRoleConfig("", "reviewer-sub", "", "", "", ""),
+		}
+		approveBody, _ := json.Marshal(approveRegistrationBody{})
+		approveReq := httptest.NewRequest("POST", "/agent-registrations/"+reg.Name+"/approve",
+			bytes.NewBuffer(approveBody))
+		approveReq.SetPathValue("name", reg.Name)
+		approveReqCtx := withCallerSub(context.Background(), "reviewer-sub")
+		approveReqCtx = withCallerGroups(approveReqCtx, []string{})
+		approveReq = approveReq.WithContext(approveReqCtx)
+		approveRR := httptest.NewRecorder()
+		approveS.handleApproveAgentRegistration(approveRR, approveReq)
+		gm.Expect(approveRR.Code).To(gomega.Equal(http.StatusOK))
+		gm.Expect(directClient.Get(ctx, client.ObjectKey{Name: reg.Name, Namespace: testDefaultNS}, reg)).To(gomega.Succeed())
+
 		regCache2 := newRegistrationCache(directClient)
 		regCache2.upsert(reg)
 		ss := &Server{

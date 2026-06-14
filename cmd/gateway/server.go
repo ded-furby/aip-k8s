@@ -17,6 +17,9 @@ import (
 )
 
 var errVerdictWrongPhase = errors.New("verdict only allowed in AwaitingVerdict phase")
+var errAlreadyTerminal = errors.New("registration already approved or denied")
+var errSelfApproval = errors.New("self-approval not permitted")
+var errValidation = errors.New("validation error")
 
 type contextKey string
 

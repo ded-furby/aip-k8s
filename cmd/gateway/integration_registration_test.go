@@ -149,13 +149,32 @@ func runRegistrationIntegrationTests(t *testing.T, directClient client.Client, c
 		gm.Expect(directClient.Create(ctx, reg)).To(gomega.Succeed())
 		defer func() { _ = directClient.Delete(ctx, reg) }()
 
+		// Approve via handler to exercise the real approve path (not a direct status patch).
+		approveS := &Server{
+			client:    directClient,
+			apiReader: directClient,
+			roles:     newRoleConfig("", "reviewer-sub", "", "", "", ""),
+		}
+		approveBody, _ := json.Marshal(approveRegistrationBody{})
+		approveReq := httptest.NewRequest("POST", "/agent-registrations/"+reg.Name+"/approve",
+			bytes.NewBuffer(approveBody))
+		approveReq.SetPathValue("name", reg.Name)
+		approveReqCtx := withCallerSub(context.Background(), "reviewer-sub")
+		approveReqCtx = withCallerGroups(approveReqCtx, []string{})
+		approveReq = approveReq.WithContext(approveReqCtx)
+		approveRR := httptest.NewRecorder()
+		approveS.handleApproveAgentRegistration(approveRR, approveReq)
+		gm.Expect(approveRR.Code).To(gomega.Equal(http.StatusOK))
+		gm.Expect(directClient.Get(ctx, client.ObjectKey{Name: reg.Name, Namespace: testDefaultNS}, reg)).To(gomega.Succeed())
+
 		regCache := newRegistrationCache(directClient)
-		regCache.upsert(reg)
+		regCache.upsert(reg) //nolint:errcheck
 
 		s := &Server{
-			client:                  directClient,
-			apiReader:               directClient,
-			dedupWindow:             0,
+			client:      directClient,
+			apiReader:   directClient,
+			dedupWindow: 0,
+
 			waitTimeout:             serverWaitTimeout,
 			roles:                   newRoleConfig("agent-1,sub-ok-2,sub-wrong", "", "", "", "", ""),
 			authRequired:            true,
@@ -210,7 +229,26 @@ func runRegistrationIntegrationTests(t *testing.T, directClient client.Client, c
 		gm.Expect(directClient.Create(ctx, regNilOIDC)).To(gomega.Succeed())
 		defer func() { _ = directClient.Delete(ctx, regNilOIDC) }()
 
-		regCache.upsert(regNilOIDC)
+		// Approve via handler to exercise the real approve path (not a direct status patch).
+		approveS = &Server{
+			client:    directClient,
+			apiReader: directClient,
+			roles:     newRoleConfig("", "reviewer-sub", "", "", "", ""),
+		}
+		approveBody, _ = json.Marshal(approveRegistrationBody{})
+		approveReq = httptest.NewRequest("POST", "/agent-registrations/"+regNilOIDC.Name+"/approve",
+			bytes.NewBuffer(approveBody))
+		approveReq.SetPathValue("name", regNilOIDC.Name)
+		approveReqCtx = withCallerSub(context.Background(), "reviewer-sub")
+		approveReqCtx = withCallerGroups(approveReqCtx, []string{})
+		approveReq = approveReq.WithContext(approveReqCtx)
+		approveRR = httptest.NewRecorder()
+		approveS.handleApproveAgentRegistration(approveRR, approveReq)
+		gm.Expect(approveRR.Code).To(gomega.Equal(http.StatusOK))
+		gm.Expect(directClient.Get(ctx,
+			client.ObjectKey{Name: regNilOIDC.Name, Namespace: testDefaultNS}, regNilOIDC)).To(gomega.Succeed())
+
+		regCache.upsert(regNilOIDC) //nolint:errcheck
 
 		sNilOIDC := &Server{
 			client:                  directClient,
@@ -256,7 +294,26 @@ func runRegistrationIntegrationTests(t *testing.T, directClient client.Client, c
 		gm.Expect(directClient.Create(ctx, regEmptyOIDC)).To(gomega.Succeed())
 		defer func() { _ = directClient.Delete(ctx, regEmptyOIDC) }()
 
-		regCache.upsert(regEmptyOIDC)
+		// Approve via handler to exercise the real approve path (not a direct status patch).
+		approveS = &Server{
+			client:    directClient,
+			apiReader: directClient,
+			roles:     newRoleConfig("", "reviewer-sub", "", "", "", ""),
+		}
+		approveBody, _ = json.Marshal(approveRegistrationBody{})
+		approveReq = httptest.NewRequest("POST", "/agent-registrations/"+regEmptyOIDC.Name+"/approve",
+			bytes.NewBuffer(approveBody))
+		approveReq.SetPathValue("name", regEmptyOIDC.Name)
+		approveReqCtx = withCallerSub(context.Background(), "reviewer-sub")
+		approveReqCtx = withCallerGroups(approveReqCtx, []string{})
+		approveReq = approveReq.WithContext(approveReqCtx)
+		approveRR = httptest.NewRecorder()
+		approveS.handleApproveAgentRegistration(approveRR, approveReq)
+		gm.Expect(approveRR.Code).To(gomega.Equal(http.StatusOK))
+		gm.Expect(directClient.Get(ctx,
+			client.ObjectKey{Name: regEmptyOIDC.Name, Namespace: testDefaultNS}, regEmptyOIDC)).To(gomega.Succeed())
+
+		regCache.upsert(regEmptyOIDC) //nolint:errcheck
 
 		sEmptyOIDC := &Server{
 			client:                  directClient,
@@ -344,8 +401,26 @@ func runRegistrationIntegrationTests(t *testing.T, directClient client.Client, c
 		gm.Expect(directClient.Create(ctx, reg)).To(gomega.Succeed())
 		defer func() { _ = directClient.Delete(ctx, reg) }()
 
+		// Approve via handler to exercise the real approve path (not a direct status patch).
+		approveS := &Server{
+			client:    directClient,
+			apiReader: directClient,
+			roles:     newRoleConfig("", "reviewer-sub", "", "", "", ""),
+		}
+		approveBody, _ := json.Marshal(approveRegistrationBody{})
+		approveReq := httptest.NewRequest("POST", "/agent-registrations/"+reg.Name+"/approve",
+			bytes.NewBuffer(approveBody))
+		approveReq.SetPathValue("name", reg.Name)
+		approveReqCtx := withCallerSub(context.Background(), "reviewer-sub")
+		approveReqCtx = withCallerGroups(approveReqCtx, []string{})
+		approveReq = approveReq.WithContext(approveReqCtx)
+		approveRR := httptest.NewRecorder()
+		approveS.handleApproveAgentRegistration(approveRR, approveReq)
+		gm.Expect(approveRR.Code).To(gomega.Equal(http.StatusOK))
+		gm.Expect(directClient.Get(ctx, client.ObjectKey{Name: reg.Name, Namespace: testDefaultNS}, reg)).To(gomega.Succeed())
+
 		regCache := newRegistrationCache(directClient)
-		regCache.upsert(reg)
+		regCache.upsert(reg) //nolint:errcheck
 
 		// 3. Spin up local stub MCP server that records the Authorization header
 		var receivedAuth string

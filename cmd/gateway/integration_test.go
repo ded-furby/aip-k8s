@@ -106,6 +106,7 @@ func TestGatewayIntegration(t *testing.T) {
 	runRegistrationIntegrationTests(t, directClient, ctx)
 	runAgentRegistrationCRUDTests(t, directClient, ctx)
 	runSelfRegistrationTests(t, directClient, ctx)
+	runRegistrationApprovalTests(t, directClient, watchClient, ctx)
 }
 
 func startTestManager(t *testing.T, cfg *rest.Config) client.Client {
