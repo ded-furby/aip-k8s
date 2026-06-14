@@ -142,7 +142,7 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 	}
 
 	if !s.authRequired && s.regCache != nil {
-		reg = s.regCache.get(agentIdentity)
+		reg = s.regCache.getForSubject(agentIdentity, "")
 		if reg != nil {
 			agentIdentity = reg.Spec.AgentIdentity
 		}
