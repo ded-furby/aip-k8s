@@ -118,26 +118,39 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 	agentIdentity := body.AgentIdentity
 	var reg *v1alpha1.AgentRegistration
 	if s.authRequired {
+		issuer := callerIssuerFromCtx(r.Context())
 		if agentIdentity != "" && agentIdentity != sub {
-			writeError(w, http.StatusForbidden, "agentIdentity does not match authenticated subject")
-			return
-		}
-		agentIdentity = sub
-		if s.regCache != nil {
-			if reg = s.regCache.getForSubject("", sub); reg != nil {
-				agentIdentity = reg.Spec.AgentIdentity
-			} else if reg = s.regCache.get(agentIdentity); reg != nil {
-				agentIdentity = reg.Spec.AgentIdentity
+			if s.regCache == nil {
+				writeError(w, http.StatusForbidden, "agentIdentity does not match authenticated subject")
+				return
+			}
+			reg = s.regCache.get(agentIdentity)
+			if reg == nil || validateOIDCIdentity(reg, issuer, sub) != nil {
+				writeError(w, http.StatusForbidden, "agentIdentity does not match authenticated subject")
+				return
+			}
+			agentIdentity = reg.Spec.AgentIdentity
+		} else {
+			agentIdentity = sub
+			if s.regCache != nil {
+				reg = s.regCache.get(sub)
+				if reg == nil {
+					reg = s.regCache.getForSubject("", sub)
+				}
+				if reg != nil {
+					agentIdentity = reg.Spec.AgentIdentity
+				}
 			}
 		}
-	} else if agentIdentity == "" {
-		agentIdentity = "unauthenticated"
-	}
-
-	if !s.authRequired && s.regCache != nil {
-		reg = s.regCache.getForSubject(agentIdentity, "")
-		if reg != nil {
-			agentIdentity = reg.Spec.AgentIdentity
+	} else {
+		if agentIdentity == "" {
+			agentIdentity = "unauthenticated"
+		}
+		if s.regCache != nil {
+			reg = s.regCache.getForSubject(agentIdentity, "")
+			if reg != nil {
+				agentIdentity = reg.Spec.AgentIdentity
+			}
 		}
 	}
 
