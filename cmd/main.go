@@ -111,6 +111,14 @@ func main() {
 	flag.IntVar(&gcCfg.SafetyMinCount, "gc-safety-min-count", gcCfg.SafetyMinCount,
 		"Skip GC if terminal AgentRequest count is below this threshold.")
 
+	var registrationPendingTTL time.Duration
+	var registrationMaxAge time.Duration
+	flag.DurationVar(&registrationPendingTTL, "registration-pending-ttl", 168*time.Hour,
+		"Deny Pending AgentRegistrations after this duration. Default 168h (7 days).")
+	flag.DurationVar(&registrationMaxAge, "registration-max-age", 0,
+		"Transition Approved AgentRegistrations back to Pending after this age (measured from status.approvedAt). "+
+			"0 = disabled. Recommended: 2160h (90 days) in strict+manual deployments.")
+
 	opts := zap.Options{
 		Development: true,
 	}
@@ -285,6 +293,16 @@ func main() {
 		RotationTTL: *jwtKeyRotationTTL,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "JWTKey")
+		os.Exit(1)
+	}
+	if err := (&controller.AgentRegistrationReconciler{
+		Client:     mgr.GetClient(),
+		APIReader:  mgr.GetAPIReader(),
+		Scheme:     mgr.GetScheme(),
+		PendingTTL: registrationPendingTTL,
+		MaxAge:     registrationMaxAge,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "AgentRegistration")
 		os.Exit(1)
 	}
 

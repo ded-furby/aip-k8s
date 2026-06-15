@@ -129,6 +129,27 @@ func requireRole(rc *roleConfig, role, sub string, groups []string, w http.Respo
 	return true
 }
 
+func requireAnyRole(rc *roleConfig, roles []string, sub string, groups []string, w http.ResponseWriter) bool {
+	for _, r := range roles {
+		switch r {
+		case roleAgent:
+			if rc.isAgent(sub, groups) {
+				return true
+			}
+		case roleReviewer:
+			if rc.isReviewer(sub, groups) {
+				return true
+			}
+		case roleAdmin:
+			if rc.isAdmin(sub, groups) {
+				return true
+			}
+		}
+	}
+	writeError(w, http.StatusForbidden, fmt.Sprintf("%s role required", strings.Join(roles, " or ")))
+	return false
+}
+
 // newOIDCMiddleware creates JWT validation middleware.
 // identityClaim is the token claim used as the caller identity (e.g. "azp",
 // "sub", "appid", "email"). If the claim is absent the middleware falls back
@@ -144,7 +165,8 @@ func newOIDCMiddleware(
 	verifier := provider.Verifier(&oidc.Config{ClientID: audience})
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" || r.URL.Path == "/metrics" {
+			if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" || r.URL.Path == "/metrics" ||
+				r.URL.Path == "/.well-known/aip" {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -172,9 +194,11 @@ func newOIDCMiddleware(
 				return
 			}
 			groups := claimStringSlice(allClaims, groupsClaim)
+			issuer := claimString(allClaims, "iss")
 			rctx := withCallerSub(r.Context(), identity)
 			rctx = withCallerGroups(rctx, groups)
 			rctx = withRawOIDCToken(rctx, raw)
+			rctx = withCallerIssuer(rctx, issuer)
 			next.ServeHTTP(w, r.WithContext(rctx))
 		})
 	}, nil
@@ -225,7 +249,8 @@ func newProxyHeaderMiddleware(trustedCIDRs string) func(http.Handler) http.Handl
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" || r.URL.Path == "/metrics" {
+			if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" || r.URL.Path == "/metrics" ||
+				r.URL.Path == "/.well-known/aip" {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -259,6 +284,11 @@ func newProxyHeaderMiddleware(trustedCIDRs string) func(http.Handler) http.Handl
 			if caller != "" {
 				r = r.WithContext(withCallerSub(r.Context(), caller))
 			}
+			// Proxy-header mode has no validated issuer; set an empty issuer so
+			// validateOIDCIdentity does not reject registrations that have a
+			// spec.oidc.issuer set. Registration-level OIDC enforcement is only
+			// meaningful when the OIDC middleware is active.
+			r = r.WithContext(withCallerIssuer(r.Context(), ""))
 			next.ServeHTTP(w, r)
 		})
 	}

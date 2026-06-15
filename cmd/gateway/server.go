@@ -17,12 +17,16 @@ import (
 )
 
 var errVerdictWrongPhase = errors.New("verdict only allowed in AwaitingVerdict phase")
+var errAlreadyTerminal = errors.New("registration already approved or denied")
+var errSelfApproval = errors.New("self-approval not permitted")
+var errValidation = errors.New("validation error")
 
 type contextKey string
 
 const callerSubKey contextKey = "callerSub"
 const callerGroupsKey contextKey = "callerGroups"
 const rawOIDCTokenKey contextKey = "rawOIDCToken"
+const callerIssuerKey contextKey = "callerIssuer"
 
 func withCallerSub(ctx context.Context, sub string) context.Context {
 	return context.WithValue(ctx, callerSubKey, sub)
@@ -51,6 +55,15 @@ func rawOIDCTokenFromCtx(ctx context.Context) string {
 	return s
 }
 
+func withCallerIssuer(ctx context.Context, issuer string) context.Context {
+	return context.WithValue(ctx, callerIssuerKey, issuer)
+}
+
+func callerIssuerFromCtx(ctx context.Context) string {
+	s, _ := ctx.Value(callerIssuerKey).(string)
+	return s
+}
+
 const defaultNamespace = "default"
 
 const (
@@ -63,6 +76,8 @@ const (
 	policyAllow         = "allow"
 	policyWarn          = "warn"
 	policyStrict        = "strict"
+	policyAuto          = "auto"
+	policyManual        = "manual"
 	annotationValueTrue = "true"
 )
 
@@ -87,6 +102,10 @@ type Server struct {
 	requireGovernedResource bool
 	jwtManager              *jwt.Manager
 	httpClient              *http.Client
+	externalURL             string
+	oidcIssuerURL           string
+	oidcClientID            string
+	deviceEndpoint          string
 	mcpServers              []MCPServer
 	// Clock is the time source used for dedup window bucketing.
 	// Defaults to time.Now when nil. Override in tests for determinism.
@@ -94,6 +113,7 @@ type Server struct {
 	mcpCache                *mcpServerCache
 	regCache                *registrationCache
 	unregisteredAgentPolicy string
+	registrationPolicy      string // "auto" or "manual"
 }
 
 type affectedTargetBody struct {

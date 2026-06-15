@@ -1,0 +1,9 @@
+# Adds namespace to all resources.
+namespace: aip-k8s-system
+
+namePrefix: aip-k8s-
+
+resources:
+- rbac.yaml
+- deployment.yaml
+- service.yaml

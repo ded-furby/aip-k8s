@@ -1,0 +1,74 @@
+resources:
+- ../../../config/gateway
+
+images:
+- name: controller
+  newName: example.com/aip-gateway
+  newTag: v0.0.1
+
+patches:
+- patch: |-
+    - op: replace
+      path: /spec/template/spec/containers/0/args
+      value:
+        - --addr=:18088
+        - --oidc-issuer-url=https://keycloak.keycloak.svc.cluster.local:8443/realms/aip
+        - --oidc-audience=aip-gateway
+        - --oidc-identity-claim=azp
+        - --agent-subjects=aip-agent-1,aip-registered-agent,aip-wrong-subject
+        - --reviewer-subjects=aip-reviewer-1
+        - --admin-subjects=aip-reviewer-1
+        - --unregistered-agent-policy=strict
+  target:
+    kind: Deployment
+    name: gateway
+- patch: |-
+    - op: replace
+      path: /spec/template/spec/containers/0/ports/0/containerPort
+      value: 18088
+  target:
+    kind: Deployment
+    name: gateway
+- patch: |-
+    - op: add
+      path: /spec/template/spec/containers/0/env
+      value:
+        - name: SSL_CERT_FILE
+          value: /etc/ssl/certs/ca.crt
+        - name: OIDC_CLIENT_ID
+          value: aip-gateway
+        - name: OIDC_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: aip-gateway-secret
+              key: client-secret
+  target:
+    kind: Deployment
+    name: gateway
+- patch: |-
+    - op: add
+      path: /spec/template/spec/containers/0/volumeMounts
+      value:
+        - name: ca-cert
+          mountPath: /etc/ssl/certs
+          readOnly: true
+  target:
+    kind: Deployment
+    name: gateway
+- patch: |-
+    - op: add
+      path: /spec/template/spec/volumes
+      value:
+        - name: ca-cert
+          secret:
+            secretName: gateway-ca-cert
+  target:
+    kind: Deployment
+    name: gateway
+- patch: |-
+    - op: replace
+      path: /spec/ports/0/targetPort
+      value: 18088
+  target:
+    kind: Service
+    name: gateway

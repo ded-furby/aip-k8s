@@ -77,6 +77,7 @@ func TestCreateAgentRequest_MissingAgentIdentityUsesUnauthenticatedRegistration(
 			AgentIdentity: "unauthenticated",
 		},
 	}
+	reg.Status.Phase = v1alpha1.PhaseApproved
 
 	s := newTestServer(reg)
 	s.authRequired = false

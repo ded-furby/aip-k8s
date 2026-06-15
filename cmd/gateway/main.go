@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"flag"
 	"fmt"
 	"log"
@@ -63,6 +65,19 @@ var (
 			"Typically sourced from a K8s Secret via environment variable.")
 	unregisteredAgentPolicy = flag.String("unregistered-agent-policy", "allow",
 		"Policy for unregistered agents: 'allow', 'warn', or 'strict'")
+	registrationPolicy = flag.String("registration-policy", "",
+		"Registration approval policy: 'auto' (approve immediately on self-registration) or 'manual' "+
+			"(hold at Pending for admin review). Default depends on --unregistered-agent-policy: "+
+			"'auto' when allow/warn, 'manual' when strict.")
+	externalURL = flag.String("external-url", "",
+		"Public base URL of this gateway (e.g. https://aip.example). "+
+			"Used in OIDC discovery and AIP discovery documents. Required for session token flow.")
+	oidcClientID = flag.String("oidc-client-id", "",
+		"Public OIDC client ID for device-flow login (aipctl login). "+
+			"Served in /.well-known/aip discovery document.")
+	deviceEndpoint = flag.String("oidc-device-endpoint", "",
+		"RFC 8628 device authorization endpoint. "+
+			"If empty, aipctl derives it from the OIDC issuer discovery document.")
 )
 
 const (
@@ -73,8 +88,46 @@ const (
 func main() { //nolint:gocyclo  // setup-heavy, acceptable for main
 	flag.Parse()
 
-	if *unregisteredAgentPolicy != "allow" && *unregisteredAgentPolicy != "warn" && *unregisteredAgentPolicy != "strict" {
+	// Load custom CA certs from SSL_CERT_FILE programmatically if set (primarily for macOS)
+	if sslCertFile := os.Getenv("SSL_CERT_FILE"); sslCertFile != "" {
+		pemCerts, err := os.ReadFile(sslCertFile)
+		if err == nil {
+			sysPool, err := x509.SystemCertPool()
+			if err != nil || sysPool == nil {
+				sysPool = x509.NewCertPool()
+			}
+			if sysPool.AppendCertsFromPEM(pemCerts) {
+				if transport, ok := http.DefaultTransport.(*http.Transport); ok {
+					if transport.TLSClientConfig == nil {
+						transport.TLSClientConfig = &tls.Config{}
+					}
+					transport.TLSClientConfig.RootCAs = sysPool
+				}
+			}
+		}
+	}
+
+	if *unregisteredAgentPolicy != policyAllow &&
+		*unregisteredAgentPolicy != policyWarn &&
+		*unregisteredAgentPolicy != policyStrict {
 		log.Fatalf("invalid --unregistered-agent-policy %q: must be allow, warn, or strict", *unregisteredAgentPolicy)
+	}
+
+	effectiveRegPolicy := *registrationPolicy
+	if effectiveRegPolicy == "" {
+		if *unregisteredAgentPolicy == policyStrict {
+			effectiveRegPolicy = policyManual
+		} else {
+			effectiveRegPolicy = policyAuto
+		}
+	}
+	if effectiveRegPolicy != policyAuto && effectiveRegPolicy != policyManual {
+		log.Fatalf("invalid --registration-policy %q: must be auto or manual", effectiveRegPolicy)
+	}
+	if *unregisteredAgentPolicy == policyStrict && effectiveRegPolicy == policyAuto {
+		log.Printf("Non-default combination: unregistered-agent-policy=%s registration-policy=%s: "+
+			"strict policy + auto registration delegates identity vetting to IdP",
+			policyStrict, policyAuto)
 	}
 
 	// Load KubeConfig — use the standard loading rules which handle
@@ -191,7 +244,14 @@ func main() { //nolint:gocyclo  // setup-heavy, acceptable for main
 		mcpCache.seed(srv.Name, srv.URL, srv.BearerToken, srv.Tools)
 	}
 
-	regCache := newRegistrationCache(mgr.GetClient())
+	deploymentNamespace := os.Getenv("POD_NAMESPACE")
+	if deploymentNamespace == "" {
+		deploymentNamespace = defaultNamespace
+	}
+	regCache := newRegistrationCache(k8sClient).withNamespace(deploymentNamespace).withOIDCCredentials(
+		os.Getenv("OIDC_CLIENT_ID"),
+		os.Getenv("OIDC_CLIENT_SECRET"),
+	)
 
 	server := &Server{
 		client:                  mgr.GetClient(),    // cached — field indexers work here
@@ -208,6 +268,11 @@ func main() { //nolint:gocyclo  // setup-heavy, acceptable for main
 		mcpCache:                mcpCache,
 		regCache:                regCache,
 		unregisteredAgentPolicy: *unregisteredAgentPolicy,
+		registrationPolicy:      effectiveRegPolicy,
+		externalURL:             *externalURL,
+		oidcIssuerURL:           *oidcIssuerURL,
+		oidcClientID:            *oidcClientID,
+		deviceEndpoint:          *deviceEndpoint,
 	}
 
 	go watchMCPServers(ctx, k8sClient, mcpCache)
@@ -228,6 +293,9 @@ func main() { //nolint:gocyclo  // setup-heavy, acceptable for main
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprint(w, "ok")
 	})
+	// AIP discovery endpoint for aipctl login bootstrap — no auth middleware
+	mux.HandleFunc("GET /.well-known/aip", server.handleAIPDiscovery)
+
 	mux.HandleFunc("GET /agent-requests", server.handleListAgentRequests)
 	mux.HandleFunc("POST /agent-requests", server.handleCreateAgentRequest)
 	mux.HandleFunc("GET /agent-requests/{name}", server.handleGetAgentRequest)
@@ -238,6 +306,7 @@ func main() { //nolint:gocyclo  // setup-heavy, acceptable for main
 	mux.HandleFunc("POST /agent-requests/{name}/approve", server.handleApproveAgentRequest)
 	mux.HandleFunc("POST /agent-requests/{name}/deny", server.handleDenyAgentRequest)
 	mux.HandleFunc("PATCH /agent-requests/{name}/verdict", server.handleVerdictAgentRequest)
+	mux.HandleFunc("POST /agent-requests/{name}/token", server.handleGetAgentRequestToken)
 	mux.HandleFunc("GET /audit-records", server.handleListAuditRecords)
 	mux.HandleFunc("POST /agent-requests/recompute-accuracy", server.handleRecomputeAccuracy)
 	mux.HandleFunc("GET /diagnostic-accuracy-summaries", server.handleListAccuracySummaries)
@@ -257,6 +326,16 @@ func main() { //nolint:gocyclo  // setup-heavy, acceptable for main
 	mux.HandleFunc("GET /safety-policies/{name}", server.handleGetSafetyPolicy)
 	mux.HandleFunc("PUT /safety-policies/{name}", server.handleReplaceSafetyPolicy)
 	mux.HandleFunc("DELETE /safety-policies/{name}", server.handleDeleteSafetyPolicy)
+	mux.HandleFunc("POST /agent-registrations", server.handleCreateAgentRegistration)
+	mux.HandleFunc("GET /agent-registrations", server.handleListAgentRegistrations)
+	mux.HandleFunc("GET /agent-registrations/{name}", server.handleGetAgentRegistration)
+	mux.HandleFunc("PUT /agent-registrations/{name}", server.handleReplaceAgentRegistration)
+	mux.HandleFunc("DELETE /agent-registrations/{name}", server.handleDeleteAgentRegistration)
+	mux.HandleFunc("POST /agent-registrations/self", server.handleSelfRegisterAgentRegistration)
+	mux.HandleFunc("POST /agent-registrations/{name}/approve", server.handleApproveAgentRegistration)
+	mux.HandleFunc("POST /agent-registrations/{name}/deny", server.handleDenyAgentRegistration)
+	mux.HandleFunc("GET /agent-registrations/{name}/watch", server.handleWatchAgentRegistration)
+	mux.HandleFunc("POST /agent-registrations/{name}/token", server.handleSessionToken)
 	mux.HandleFunc("POST /agent-graduation-policies", server.handleCreateAgentGraduationPolicy)
 	mux.HandleFunc("GET /agent-graduation-policies", server.handleListAgentGraduationPolicies)
 	mux.HandleFunc("GET /agent-graduation-policies/{name}", server.handleGetAgentGraduationPolicy)

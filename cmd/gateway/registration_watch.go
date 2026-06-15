@@ -23,10 +23,13 @@ const regWatchRetryDelay = 2 * time.Second
 
 // registrationCache is a thread-safe in-memory cache of AgentRegistration CRDs.
 type registrationCache struct {
-	k8sClient client.Client
-	mu        sync.RWMutex
-	byAgent   map[string]*v1alpha1.AgentRegistration
-	providers map[string]map[string]credential.Provider // agentIdentity -> service -> Provider
+	k8sClient        client.Client
+	oidcClientID     string
+	oidcClientSecret string
+	namespace        string // deployment namespace; only registrations here are watched
+	mu               sync.RWMutex
+	byAgent          map[string]*v1alpha1.AgentRegistration
+	providers        map[string]map[string]credential.Provider // agentIdentity -> service -> Provider
 }
 
 func newRegistrationCache(k8sClient client.Client) *registrationCache {
@@ -35,6 +38,21 @@ func newRegistrationCache(k8sClient client.Client) *registrationCache {
 		byAgent:   make(map[string]*v1alpha1.AgentRegistration),
 		providers: make(map[string]map[string]credential.Provider),
 	}
+}
+
+// withNamespace sets the deployment namespace for scoping watch operations.
+// Call once at startup before watchAgentRegistrations begins.
+func (c *registrationCache) withNamespace(ns string) *registrationCache {
+	c.namespace = ns
+	return c
+}
+
+// withOIDCCredentials sets the client credentials used for KubernetesOIDC token exchange.
+// Call once at startup before watchAgentRegistrations begins.
+func (c *registrationCache) withOIDCCredentials(clientID, clientSecret string) *registrationCache {
+	c.oidcClientID = clientID
+	c.oidcClientSecret = clientSecret
+	return c
 }
 
 // getForSubject looks up a registration by claimed agent identity and/or caller subject.
@@ -108,9 +126,16 @@ func (c *registrationCache) exists(agentIdentity string) bool {
 }
 
 // providerFor returns the CredentialProvider for (agentIdentity, service).
+// Blocks access unless the registration is Approved. Phase=="" is permitted for
+// legacy direct-provider setups where no AgentRegistration drives the phase.
+// When no registration exists in byAgent, the providers map is checked directly.
 func (c *registrationCache) providerFor(agentIdentity, service string) credential.Provider {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
+	reg := c.byAgent[agentIdentity]
+	if reg != nil && reg.Status.Phase != "" && reg.Status.Phase != v1alpha1.PhaseApproved {
+		return nil
+	}
 	if svcProviders, ok := c.providers[agentIdentity]; ok {
 		return svcProviders[service]
 	}
@@ -128,13 +153,23 @@ func (c *registrationCache) listAgents() []string {
 	return out
 }
 
-// upsert atomically replaces the cached entry and instantiates its credential providers.
+// upsert adds or updates the cached entry. Providers are only rebuilt when the
+// spec actually changes (Generation increments), so status-only watch events
+// and relist reconnects do not evict cached exchanged tokens unnecessarily.
 func (c *registrationCache) upsert(reg *v1alpha1.AgentRegistration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	agentID := reg.Spec.AgentIdentity
 	if agentID == "" {
+		return
+	}
+
+	// Status updates, annotation/label changes, and relist reconnects do not
+	// change Generation. Refresh the stored pointer so status.phase is visible
+	// to callers, but skip the provider rebuild to preserve cached tokens.
+	if existing, ok := c.byAgent[agentID]; ok && existing.Generation == reg.Generation {
+		c.byAgent[agentID] = reg
 		return
 	}
 
@@ -163,13 +198,27 @@ func (c *registrationCache) upsert(reg *v1alpha1.AgentRegistration) {
 				)
 			}
 		case v1alpha1.ExternalIdentityAWSWebIdentity:
-			provider = credential.NewAWSWebIdentityProvider()
+			if binding.AWSWebIdentity != nil {
+				provider = credential.NewAWSWebIdentityProvider(
+					binding.AWSWebIdentity.RoleARN,
+					binding.AWSWebIdentity.RoleSessionName,
+					binding.AWSWebIdentity.Region,
+					binding.AWSWebIdentity.DurationSeconds,
+					binding.AWSWebIdentity.STSEndpoint,
+				)
+			}
 		case v1alpha1.ExternalIdentityKubernetesOIDC:
 			if binding.KubernetesOIDC != nil {
+				if c.oidcClientID == "" {
+					log.Printf("WARNING: KubernetesOIDC binding for agent %q service %q: "+
+						"OIDC_CLIENT_ID is unset — token exchange will be unauthenticated; "+
+						"set gateway.oidcExchange.clientID in Helm values or OIDC_CLIENT_ID env var",
+						agentID, binding.Service)
+				}
 				provider = credential.NewKubernetesOIDCProvider(
 					binding.KubernetesOIDC.TokenExchangeURL,
 					binding.KubernetesOIDC.Audience,
-				)
+				).WithCredentials(c.oidcClientID, c.oidcClientSecret)
 			}
 		case v1alpha1.ExternalIdentityKubernetesTokenRequest:
 			if binding.KubernetesTokenRequest != nil {
@@ -199,7 +248,8 @@ func (c *registrationCache) remove(agentIdentity string) {
 	delete(c.providers, agentIdentity)
 }
 
-// watchAgentRegistrations runs a background loop that lists and watches AgentRegistration CRDs.
+// watchAgentRegistrations runs a background loop that lists and watches AgentRegistration CRDs
+// scoped to the cache's configured namespace (empty = cluster-wide).
 func watchAgentRegistrations(ctx context.Context, cl client.WithWatch, cache *registrationCache) {
 	for {
 		if err := watchAgentRegistrationsOnce(ctx, cl, cache); err != nil {
@@ -213,13 +263,17 @@ func watchAgentRegistrations(ctx context.Context, cl client.WithWatch, cache *re
 	}
 }
 
-// watchAgentRegistrationsOnce performs a single list+watch cycle.
+// watchAgentRegistrationsOnce performs a single list+watch cycle scoped to the cache namespace.
 func watchAgentRegistrationsOnce(ctx context.Context, cl client.WithWatch, cache *registrationCache) error {
 	var initialList v1alpha1.AgentRegistrationList
+	listOpts := []client.ListOption{}
+	if cache.namespace != "" {
+		listOpts = append(listOpts, client.InNamespace(cache.namespace))
+	}
 	listErr := retry.OnError(retry.DefaultRetry, func(err error) bool {
 		return err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
 	}, func() error {
-		return cl.List(ctx, &initialList)
+		return cl.List(ctx, &initialList, listOpts...)
 	})
 	if listErr != nil {
 		return listErr
@@ -244,10 +298,14 @@ func watchAgentRegistrationsOnce(ctx context.Context, cl client.WithWatch, cache
 	log.Printf("AgentRegistration watch loaded registrations, count=%d", len(initialList.Items))
 
 	rv := initialList.ResourceVersion
-	watcher, err := cl.Watch(ctx, &v1alpha1.AgentRegistrationList{}, &client.ListOptions{
+	watchOpts := []client.ListOption{&client.ListOptions{
 		FieldSelector: fields.Everything(),
 		Raw:           &metav1.ListOptions{ResourceVersion: rv},
-	})
+	}}
+	if cache.namespace != "" {
+		watchOpts = append(watchOpts, client.InNamespace(cache.namespace))
+	}
+	watcher, err := cl.Watch(ctx, &v1alpha1.AgentRegistrationList{}, watchOpts...)
 	if err != nil {
 		return err
 	}
