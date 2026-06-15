@@ -5,8 +5,9 @@ package e2e
 // Phase 8: Gateway Keycloak OIDC + Registration Policy + Credential Brokering
 //
 // Test-layer contract (see also cmd/gateway/gateway_registration_test.go):
-//   - Binary-subprocess tests (cmd/gateway/): cover strict-mode 403, IDENTITY_MISMATCH,
-//     token injection logic with a fake OIDC server — fast, no cluster required.
+//   - Binary-subprocess tests (cmd/gateway/): cover strict-mode 403, body/token
+//     identity mismatches, token injection logic with a fake OIDC server — fast,
+//     no cluster required.
 //   - THIS FILE: verifies the full in-cluster path with a real Keycloak OIDC server
 //     and a real MCPServer CR → controller → credential brokering round trip.
 //

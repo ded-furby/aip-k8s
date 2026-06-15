@@ -345,8 +345,8 @@ func runRegistrationIntegrationTests(t *testing.T, directClient client.Client, c
 
 		// 8. Registered agent, empty AllowedSubjects, mismatched sub -> 403
 		// (identity lookup is token-driven; sub="someone-else" does not match
-		// AgentIdentity="agent-empty-oidc", so the result is 403 with either
-		// IDENTITY_MISMATCH or AGENT_NOT_REGISTERED.)
+		// AgentIdentity="agent-empty-oidc", so the result is a 403 body/token
+		// identity mismatch before registration approval logic matters.)
 		reqEmptyOIDCWrong := httptest.NewRequest("POST", "/agent-requests", bytes.NewBuffer(jsonBodyEmptyOIDC))
 		reqEmptyOIDCWrongCtx := withCallerSub(reqEmptyOIDCWrong.Context(), "someone-else")
 		reqEmptyOIDCWrongCtx = withCallerGroups(reqEmptyOIDCWrongCtx, []string{})
