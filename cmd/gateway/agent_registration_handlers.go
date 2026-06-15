@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 
@@ -249,12 +250,15 @@ func (s *Server) handleSelfRegisterAgentRegistration(w http.ResponseWriter, r *h
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 
 	var body selfRegisterRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
 	ns := defaultNamespace
+	if s.regCache != nil && s.regCache.namespace != "" {
+		ns = s.regCache.namespace
+	}
 
 	mode := body.Mode
 	if mode == "" {
@@ -319,9 +323,9 @@ func (s *Server) handleSelfRegisterAgentRegistration(w http.ResponseWriter, r *h
 		reg.Status.ApprovedAt = &now
 		if patchErr := s.client.Status().Patch(r.Context(), reg,
 			client.MergeFromWithOptions(patchBase2, client.MergeFromWithOptimisticLock{})); patchErr != nil {
-			log.Printf("WARNING: auto-approve patch failed for AgentRegistration name=%s err=%v", reg.Name, patchErr)
+			log.Printf("Auto-approve patch failed for AgentRegistration name=%s err=%v", reg.Name, patchErr)
 			if getErr := s.client.Get(r.Context(), types.NamespacedName{Name: reg.Name, Namespace: ns}, reg); getErr != nil {
-				log.Printf("ERROR: re-fetch after auto-approve failure name=%s err=%v", reg.Name, getErr)
+				log.Printf("Re-fetch after auto-approve failure for AgentRegistration name=%s err=%v", reg.Name, getErr)
 			}
 		}
 	}
@@ -373,14 +377,16 @@ func (s *Server) handleApproveAgentRegistration(w http.ResponseWriter, r *http.R
 
 	var reg v1alpha1.AgentRegistration
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &reg); err != nil {
+		// Use apiReader (uncached) inside the retry loop so even if the informer
+		// cache hasn't observed the object yet, the direct read succeeds.
+		if err := s.apiReader.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &reg); err != nil {
 			return err
 		}
 		if reg.Status.Phase == v1alpha1.PhaseApproved || reg.Status.Phase == v1alpha1.PhaseDenied {
 			return errAlreadyTerminal
 		}
 		// Self-approval guard: reviewer cannot approve their own registration.
-		if s.authRequired && reg.Spec.AgentIdentity == sub {
+		if s.authRequired && (reg.Spec.AgentIdentity == sub || reg.Status.RegisteredBy == sub) {
 			return errSelfApproval
 		}
 		now := metav1.Now()
@@ -474,7 +480,7 @@ func (s *Server) handleDenyAgentRegistration(w http.ResponseWriter, r *http.Requ
 
 	var reg v1alpha1.AgentRegistration
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &reg); err != nil {
+		if err := s.apiReader.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &reg); err != nil {
 			return err
 		}
 		if reg.Status.Phase == v1alpha1.PhaseApproved || reg.Status.Phase == v1alpha1.PhaseDenied {

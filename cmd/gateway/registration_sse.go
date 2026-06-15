@@ -50,16 +50,32 @@ func (s *Server) streamAgentRegistrationPhase(
 		}
 		return
 	}
-	if reg.Status.Phase != "" {
-		if err := writeSSEEvent(w, rc, sseEventUpdate, agentRegistrationPayload(reg)); err != nil {
+
+	// Re-read with apiReader before setting up the watch. This closes the race
+	// between the caller's apiReader.Get and this Watch setup: any phase transition
+	// that fired in that window will be visible here, preventing a hung SSE stream.
+	var current v1alpha1.AgentRegistration
+	if err := s.apiReader.Get(ctx, client.ObjectKey{Namespace: ns, Name: reg.Name}, &current); err != nil {
+		log.Printf("SSE: failed to re-read AgentRegistration name=%s namespace=%s err=%v", reg.Name, ns, err)
+		writeSSEError(w, rc, "failed to re-read AgentRegistration")
+		return
+	}
+	if isTerminalRegistrationPhase(&current) {
+		if err := writeSSEEvent(w, rc, sseEventResult, agentRegistrationPayload(&current)); err != nil {
+			log.Printf("SSE: failed to write terminal result for registration %s: %v", current.Name, err)
+		}
+		return
+	}
+	if current.Status.Phase != "" {
+		if err := writeSSEEvent(w, rc, sseEventUpdate, agentRegistrationPayload(&current)); err != nil {
 			return
 		}
 	}
 
 	watcher, err := s.watchClient.Watch(ctx, &v1alpha1.AgentRegistrationList{},
 		client.InNamespace(ns),
-		client.MatchingFields{"metadata.name": reg.Name},
-		&client.ListOptions{Raw: &metav1.ListOptions{ResourceVersion: reg.ResourceVersion}},
+		client.MatchingFields{"metadata.name": current.Name},
+		&client.ListOptions{Raw: &metav1.ListOptions{ResourceVersion: current.ResourceVersion}},
 	)
 	if err != nil {
 		log.Printf("SSE: failed to watch AgentRegistration name=%s namespace=%s err=%v", reg.Name, ns, err)

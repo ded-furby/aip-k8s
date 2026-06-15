@@ -165,7 +165,8 @@ func newOIDCMiddleware(
 	verifier := provider.Verifier(&oidc.Config{ClientID: audience})
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" || r.URL.Path == "/metrics" {
+			if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" || r.URL.Path == "/metrics" ||
+				r.URL.Path == "/.well-known/aip" {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -248,7 +249,8 @@ func newProxyHeaderMiddleware(trustedCIDRs string) func(http.Handler) http.Handl
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" || r.URL.Path == "/metrics" {
+			if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" || r.URL.Path == "/metrics" ||
+				r.URL.Path == "/.well-known/aip" {
 				next.ServeHTTP(w, r)
 				return
 			}

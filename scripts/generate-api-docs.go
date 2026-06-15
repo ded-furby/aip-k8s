@@ -56,6 +56,8 @@ var handlerDescriptions = map[string]string{
 	"ApproveAgentRegistration":      "Approve a pending AgentRegistration (reviewer role)",
 	"DenyAgentRegistration":         "Deny a pending AgentRegistration (reviewer role)",
 	"WatchAgentRegistration":        "SSE watch for AgentRegistration phase transitions (agent: own only; reviewer/admin: any)",
+	"SessionToken":                  "Mint a session token for kubectl exec credential plugin (agent role)",
+	"AIPDiscovery":                  "AIP gateway discovery for aipctl login (unauthenticated)",
 	"GetAgentRequestToken":         "Get a brokered token for an AgentRequest",
 	"MCP":                          "Proxy MCP tool calls via JSON-RPC 2.0 (native MCP protocol)",
 	"MCPProxy":                     "Proxy MCP tool calls via REST (legacy, for non-MCP clients)",

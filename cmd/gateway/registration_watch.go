@@ -126,14 +126,14 @@ func (c *registrationCache) exists(agentIdentity string) bool {
 }
 
 // providerFor returns the CredentialProvider for (agentIdentity, service).
-// Returns nil when the registration is Denied — only Denied revokes provider
-// access. When no registration exists in byAgent (e.g. legacy direct-provider
-// setups), the providers map is checked directly for backward compatibility.
+// Blocks access unless the registration is Approved. Phase=="" is permitted for
+// legacy direct-provider setups where no AgentRegistration drives the phase.
+// When no registration exists in byAgent, the providers map is checked directly.
 func (c *registrationCache) providerFor(agentIdentity, service string) credential.Provider {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	reg := c.byAgent[agentIdentity]
-	if reg != nil && reg.Status.Phase == v1alpha1.PhaseDenied {
+	if reg != nil && reg.Status.Phase != "" && reg.Status.Phase != v1alpha1.PhaseApproved {
 		return nil
 	}
 	if svcProviders, ok := c.providers[agentIdentity]; ok {

@@ -102,6 +102,10 @@ type Server struct {
 	requireGovernedResource bool
 	jwtManager              *jwt.Manager
 	httpClient              *http.Client
+	externalURL             string
+	oidcIssuerURL           string
+	oidcClientID            string
+	deviceEndpoint          string
 	mcpServers              []MCPServer
 	// Clock is the time source used for dedup window bucketing.
 	// Defaults to time.Now when nil. Override in tests for determinism.

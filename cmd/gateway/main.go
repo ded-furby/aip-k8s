@@ -69,6 +69,15 @@ var (
 		"Registration approval policy: 'auto' (approve immediately on self-registration) or 'manual' "+
 			"(hold at Pending for admin review). Default depends on --unregistered-agent-policy: "+
 			"'auto' when allow/warn, 'manual' when strict.")
+	externalURL = flag.String("external-url", "",
+		"Public base URL of this gateway (e.g. https://aip.example). "+
+			"Used in OIDC discovery and AIP discovery documents. Required for session token flow.")
+	oidcClientID = flag.String("oidc-client-id", "",
+		"Public OIDC client ID for device-flow login (aipctl login). "+
+			"Served in /.well-known/aip discovery document.")
+	deviceEndpoint = flag.String("oidc-device-endpoint", "",
+		"RFC 8628 device authorization endpoint. "+
+			"If empty, aipctl derives it from the OIDC issuer discovery document.")
 )
 
 const (
@@ -116,9 +125,9 @@ func main() { //nolint:gocyclo  // setup-heavy, acceptable for main
 		log.Fatalf("invalid --registration-policy %q: must be auto or manual", effectiveRegPolicy)
 	}
 	if *unregisteredAgentPolicy == policyStrict && effectiveRegPolicy == policyAuto {
-		log.Printf("WARNING: --unregistered-agent-policy=strict with --registration-policy=auto: " +
-			"any authenticated caller can self-register and be immediately approved; " +
-			"identity vetting is fully delegated to the IdP")
+		log.Printf("Non-default combination: unregistered-agent-policy=%s registration-policy=%s: "+
+			"strict policy + auto registration delegates identity vetting to IdP",
+			policyStrict, policyAuto)
 	}
 
 	// Load KubeConfig — use the standard loading rules which handle
@@ -260,6 +269,10 @@ func main() { //nolint:gocyclo  // setup-heavy, acceptable for main
 		regCache:                regCache,
 		unregisteredAgentPolicy: *unregisteredAgentPolicy,
 		registrationPolicy:      effectiveRegPolicy,
+		externalURL:             *externalURL,
+		oidcIssuerURL:           *oidcIssuerURL,
+		oidcClientID:            *oidcClientID,
+		deviceEndpoint:          *deviceEndpoint,
 	}
 
 	go watchMCPServers(ctx, k8sClient, mcpCache)
@@ -280,6 +293,9 @@ func main() { //nolint:gocyclo  // setup-heavy, acceptable for main
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprint(w, "ok")
 	})
+	// AIP discovery endpoint for aipctl login bootstrap — no auth middleware
+	mux.HandleFunc("GET /.well-known/aip", server.handleAIPDiscovery)
+
 	mux.HandleFunc("GET /agent-requests", server.handleListAgentRequests)
 	mux.HandleFunc("POST /agent-requests", server.handleCreateAgentRequest)
 	mux.HandleFunc("GET /agent-requests/{name}", server.handleGetAgentRequest)
@@ -319,6 +335,7 @@ func main() { //nolint:gocyclo  // setup-heavy, acceptable for main
 	mux.HandleFunc("POST /agent-registrations/{name}/approve", server.handleApproveAgentRegistration)
 	mux.HandleFunc("POST /agent-registrations/{name}/deny", server.handleDenyAgentRegistration)
 	mux.HandleFunc("GET /agent-registrations/{name}/watch", server.handleWatchAgentRegistration)
+	mux.HandleFunc("POST /agent-registrations/{name}/token", server.handleSessionToken)
 	mux.HandleFunc("POST /agent-graduation-policies", server.handleCreateAgentGraduationPolicy)
 	mux.HandleFunc("GET /agent-graduation-policies", server.handleListAgentGraduationPolicies)
 	mux.HandleFunc("GET /agent-graduation-policies/{name}", server.handleGetAgentGraduationPolicy)
