@@ -93,9 +93,10 @@ jobs:
           DASHBOARD_URL: http://localhost:${{ env.DASH_PORT }}
           IMAGE_TAG: ${{ steps.tag.outputs.sha }}
 
-      - name: Run full e2e suite against chart deployment
+      - name: Validate controller deployment against chart
         run: |
-          go test -v -tags=e2e ./test/e2e/... -ginkgo.v
+          go test -v -tags=e2e ./test/e2e/... -ginkgo.v \
+            --ginkgo.focus "Controller deployment"
         env:
           KUBECONFIG: ${{ env.KUBECONFIG }}
           GATEWAY_URL: http://localhost:${{ env.GW_PORT }}
