@@ -380,9 +380,9 @@ var _ = Describe("Phase 8: Gateway Keycloak OIDC + Registration Policy + Credent
 		Expect(string(b)).To(ContainSubstring("AGENT_NOT_REGISTERED"))
 	})
 
-	It("agent without registration spoofing registered identity → 403 AGENT_NOT_REGISTERED", func() {
-		// kcWrongSubjectID has no AgentRegistration; gateway looks up by token
-		// identity (not by body.agentIdentity), so it gets AGENT_NOT_REGISTERED.
+	It("agent without registration spoofing registered identity → 403 mismatch", func() {
+		// kcWrongSubjectID does not match the requested registered identity, so
+		// the gateway rejects the request before registration lookup.
 		token := kcFetchToken(kcPort, kcRealm, kcWrongSubjectID, kcWrongSubjectSecret)
 		resp, err := gwPostWithToken(kc8GWPort, "/agent-requests", fmt.Sprintf(`{
 			"agentIdentity": %q,
@@ -394,7 +394,7 @@ var _ = Describe("Phase 8: Gateway Keycloak OIDC + Registration Policy + Credent
 		defer resp.Body.Close() //nolint:errcheck
 		Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
 		b, _ := io.ReadAll(resp.Body)
-		Expect(string(b)).To(ContainSubstring("AGENT_NOT_REGISTERED"))
+		Expect(string(b)).To(ContainSubstring("agentIdentity does not match authenticated subject"))
 	})
 
 	It("registered agent with matching OIDC subject → 201", func() {
