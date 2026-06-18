@@ -160,6 +160,48 @@ func TestCreateAgentRequest_RejectsMismatchedAuthenticatedAgentIdentity(t *testi
 	g.Expect(list.Items).To(gomega.BeEmpty())
 }
 
+func TestCreateAgentRequest_RejectsMismatchedAuthenticatedIdentityWithRegistration(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	reg := &v1alpha1.AgentRegistration{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "impersonated-agent-body-reg",
+			Namespace: "default",
+		},
+		Spec: v1alpha1.AgentRegistrationSpec{
+			AgentIdentity: "impersonated-agent-body",
+		},
+	}
+
+	s := newTestServer(reg)
+	s.authRequired = true
+	s.roles = newRoleConfig("agent-sub", "reviewer-sub", "", "", "", "")
+	s.regCache = newRegistrationCache(s.client)
+	s.regCache.upsert(reg)
+
+	body := createAgentRequestBody{
+		AgentIdentity: "impersonated-agent-body",
+		Action:        "restart",
+		TargetURI:     "k8s://prod/default/deployment/mismatched-registration-test",
+		Reason:        "test",
+		Namespace:     "default",
+	}
+	jsonBody, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/agent-requests", bytes.NewBuffer(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(withCallerSub(req.Context(), "agent-sub"))
+	w := httptest.NewRecorder()
+
+	s.handleCreateAgentRequest(w, req)
+
+	g.Expect(w.Code).To(gomega.Equal(http.StatusForbidden))
+	g.Expect(w.Body.String()).To(gomega.ContainSubstring("agentIdentity does not match authenticated subject"))
+}
+
 //nolint:unparam // ns is always "default" in tests but kept for symmetry with pendingAgentRequest
 func approvedAgentRequest(name, ns, agentIdentity string) *v1alpha1.AgentRequest {
 	ar := pendingAgentRequest(name, ns, agentIdentity)
