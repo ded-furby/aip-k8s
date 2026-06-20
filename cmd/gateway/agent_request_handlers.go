@@ -115,7 +115,7 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	agentIdentity := body.AgentIdentity
+	var agentIdentity string
 	var reg *v1alpha1.AgentRegistration
 	if s.authRequired {
 		if body.AgentIdentity != "" && body.AgentIdentity != sub {
@@ -132,15 +132,15 @@ func (s *Server) handleCreateAgentRequest(w http.ResponseWriter, r *http.Request
 				agentIdentity = reg.Spec.AgentIdentity
 			}
 		}
+	} else if body.AgentIdentity == "" {
+		agentIdentity = "unauthenticated"
 	} else {
-		if agentIdentity == "" {
-			agentIdentity = "unauthenticated"
-		}
-		if s.regCache != nil {
-			reg = s.regCache.getForSubject(agentIdentity, "")
-			if reg != nil {
-				agentIdentity = reg.Spec.AgentIdentity
-			}
+		agentIdentity = body.AgentIdentity
+	}
+	if s.regCache != nil {
+		reg = s.regCache.getForSubject(agentIdentity, "")
+		if reg != nil {
+			agentIdentity = reg.Spec.AgentIdentity
 		}
 	}
 
